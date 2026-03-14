@@ -1,0 +1,17 @@
+[package]
+name = "liquifact_escrow"
+version = "0.1.0"
+edition = "2021"
+description = "LiquiFact invoice escrow contract - holds funds until settlement"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = "25.0"
+
+[dev-dependencies]
+soroban-sdk = { version = "25.0", features = ["testutils"] }
