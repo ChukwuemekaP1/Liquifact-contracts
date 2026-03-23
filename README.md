@@ -53,22 +53,51 @@ For CI and local checks you only need Rust and `cargo`.
 
 ```
 liquifact-contracts/
-├── Cargo.toml           # Workspace definition
+├── Cargo.toml              # Workspace definition
+├── docs/
+│   └── EVENT_SCHEMA.md    # Indexer-friendly event schema reference
 ├── escrow/
-│   ├── Cargo.toml       # Escrow contract crate
+│   ├── Cargo.toml          # Escrow contract crate
 │   └── src/
-│       ├── lib.rs       # LiquiFact escrow contract (init, fund, settle)
-│       └── test.rs      # Unit tests
+│       ├── lib.rs          # LiquiFact escrow contract (init, fund, settle)
+│       └── test.rs         # Unit tests (lifecycle, events, edge cases)
 └── .github/workflows/
-    └── ci.yml           # CI: fmt, build, test
+    └── ci.yml              # CI: fmt, build, test
 ```
 
 ### Escrow contract (high level)
 
-- **init** — Create an invoice escrow (invoice id, SME address, amount, yield bps, maturity).
-- **get_escrow** — Read current escrow state.
-- **fund** — Record investor funding; status becomes “funded” when target is met.
-- **settle** — Mark escrow as settled (buyer paid; investors receive principal + yield).
+| Function | Description |
+|---|---|
+| `init` | Create an invoice escrow (invoice id, SME address, amount, yield bps, maturity). |
+| `get_escrow` | Read current escrow state (read-only, no event). |
+| `fund` | Record investor funding; status becomes **funded** when target is met. |
+| `settle` | Mark escrow as settled (buyer paid; investors receive principal + yield). |
+
+**Status codes**
+
+| Value | Name | Meaning |
+|---|---|---|
+| `0` | open | Accepting investor funding |
+| `1` | funded | Target met; SME can be paid; awaiting buyer settlement |
+| `2` | settled | Buyer paid; investors can redeem principal + yield |
+
+---
+
+## Events
+
+Every state-changing function emits a structured Soroban contract event so
+backend indexers and analytics services can reconstruct contract history
+directly from ledger meta.
+
+| Function | Topic[0] | Topic[1] | Payload |
+|---|---|---|---|
+| `init` | `"escrow"` | `"initd"` | `InvoiceEscrow` (full snapshot) |
+| `fund` | `"escrow"` | `"funded"` | `FundedPayload` (investor, amount, running totals) |
+| `settle` | `"escrow"` | `"settled"` | `SettledPayload` (funded_amount, yield_bps, maturity) |
+
+For full field descriptions, payload examples, XDR topic filters, and the
+versioning strategy see **[docs/EVENT_SCHEMA.md](docs/EVENT_SCHEMA.md)**.
 
 ---
 
