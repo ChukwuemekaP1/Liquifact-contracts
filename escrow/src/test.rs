@@ -337,4 +337,17 @@ fn test_high_investor_benchmark() {
     );
 
     assert_eq!(escrow.status, 1, "status should be 'funded'");
+
+
+    #[test]
+fn test_currency_validation() {
+    use soroban_sdk::Env;
+
+    let env = Env::default();
+    let valid_currency = "USD";
+    let invalid_currency = "us";
+
+    assert!(validate_currency(valid_currency).is_ok());
+    assert!(validate_currency(invalid_currency).is_err());
+}
 }

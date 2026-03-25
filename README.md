@@ -70,6 +70,12 @@ liquifact-contracts/
 
 ---
 
+### Invoice Currency Metadata Validation
+Invoices now include a `currency` field validated to be a 3-character uppercase ISO 4217 symbol.
+- Validation occurs during `init`.
+- Examples: USD, EUR, GBP
+- Invalid formats (empty, lowercase, >3 chars) are rejected.
+
 ### Benchmark: High Investor Count
 
 Added a test (`test_high_investor_benchmark`) under `escrow/src/test.rs` 
