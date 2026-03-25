@@ -70,7 +70,7 @@ liquifact-contracts/
 
 ### Escrow contract (high level)
 
-- **init** — Create an invoice escrow (invoice id, SME address, amount, yield bps, maturity).
+- **init** — Create an invoice escrow (invoice id, SME address, admin address, amount, yield bps, maturity).
 - **get_escrow** — Read current escrow state.
 - **get_version** — Return the stored schema version number.
 - **fund** — Record investor funding; status becomes "funded" when target is met.

@@ -55,6 +55,7 @@ fn test_init_and_get_escrow() {
         &admin,
         &symbol_short!("INV001"),
         &sme,
+        &admin,
         &10_000_0000000i128,
         &800i64,
         &1000u64,
@@ -93,6 +94,7 @@ fn test_fund_and_settle() {
     env.mock_all_auths();
     let admin = Address::generate(&env);
     let sme = Address::generate(&env);
+    let admin = Address::generate(&env);
     let investor = Address::generate(&env);
     let client = deploy(&env);
 
@@ -100,6 +102,7 @@ fn test_fund_and_settle() {
         &admin,
         &symbol_short!("INV002"),
         &sme,
+        &admin,
         &10_000_0000000i128,
         &800i64,
         &1000u64,
@@ -488,4 +491,96 @@ fn test_reinit_overwrites_escrow() {
     let escrow2 = client.get_escrow();
     assert_eq!(escrow2.sme_address, sme2);
     assert_eq!(escrow2.invoice_id, symbol_short!("ATTACK"));
+}
+
+#[test]
+fn test_update_maturity_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sme = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let contract_id = env.register(LiquifactEscrow, ());
+    let client = LiquifactEscrowClient::new(&env, &contract_id);
+
+    client.init(
+        &symbol_short!("INV003"),
+        &sme,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+
+    let new_maturity = 2000u64;
+    let escrow = client.update_maturity(&new_maturity);
+    assert_eq!(escrow.maturity, new_maturity);
+
+    // Verify state is still Open
+    assert_eq!(escrow.status, 0);
+}
+
+#[test]
+#[should_panic]
+fn test_update_maturity_unauthorized() {
+    let env = Env::default();
+    // No mock_all_auths() here to manually set auths if needed, 
+    // or use mock_all_auths and then try to call from a different address if the client allows it.
+    // In Soroban tests, client.update_maturity() will use the address that registered the contract or default.
+    // Actually, client calls in tests usually don't have a "caller" unless specified.
+    
+    let sme = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let contract_id = env.register(LiquifactEscrow, ());
+    let client = LiquifactEscrowClient::new(&env, &contract_id);
+
+    client.init(
+        &symbol_short!("INV004"),
+        &sme,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+
+    // Attempt to call from attacker. 
+    // In Soroban SDK tests, you can switch the address using set_auths or similar, 
+    // but a simpler way is to use `env.as_contract(&attacker, || client.update_maturity(&2000))`
+    // Wait, the client is bound to the contract, not the caller.
+    
+    env.as_contract(&attacker, || {
+        client.update_maturity(&2000u64);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Maturity can only be updated in Open state")]
+fn test_update_maturity_wrong_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sme = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let contract_id = env.register(LiquifactEscrow, ());
+    let client = LiquifactEscrowClient::new(&env, &contract_id);
+
+    client.init(
+        &symbol_short!("INV005"),
+        &sme,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+
+    // Fund the escrow to change state to 1 (Funded)
+    client.fund(&investor, &10_000_0000000i128);
+    
+    let escrow = client.get_escrow();
+    assert_eq!(escrow.status, 1);
+
+    // This should panic
+    client.update_maturity(&2000u64);
 }
