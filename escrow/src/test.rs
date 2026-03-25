@@ -1211,3 +1211,227 @@ fn test_state_values_are_correct() {
     let escrow = client.get_escrow();
     assert_eq!(escrow.status, 2, "Settle should set status to Settled (2)");
 }
+
+// ---------------------------------------------------------------------------
+// EscrowFactory tests
+// ---------------------------------------------------------------------------
+
+/// Helper: deploy a fresh EscrowFactory and return (env, client, admin, sme).
+fn factory_setup() -> (Env, EscrowFactoryClient<'static>, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let contract_id = env.register(EscrowFactory, ());
+    let client = EscrowFactoryClient::new(&env, &contract_id);
+    (env, client, admin, sme)
+}
+
+/// create_escrow stores the escrow and it is retrievable via get_escrow.
+#[test]
+fn test_factory_create_and_get_escrow() {
+    let (_, client, admin, sme) = factory_setup();
+
+    let escrow = client.create_escrow(
+        &admin,
+        &symbol_short!("F001"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &1000u64,
+    );
+
+    assert_eq!(escrow.invoice_id, symbol_short!("F001"));
+    assert_eq!(escrow.admin, admin);
+    assert_eq!(escrow.sme_address, sme);
+    assert_eq!(escrow.amount, 10_000i128);
+    assert_eq!(escrow.funded_amount, 0);
+    assert_eq!(escrow.status, 0);
+
+    let got = client.get_escrow(&symbol_short!("F001"));
+    assert_eq!(got.invoice_id, escrow.invoice_id);
+    assert_eq!(got.admin, admin);
+}
+
+/// Factory isolates multiple escrows — each invoice is independent.
+#[test]
+fn test_factory_multiple_escrows_isolated() {
+    let (env, client, admin, sme) = factory_setup();
+    let sme2 = Address::generate(&env);
+
+    client.create_escrow(
+        &admin,
+        &symbol_short!("F002"),
+        &sme,
+        &1_000i128,
+        &500i64,
+        &500u64,
+    );
+    client.create_escrow(
+        &admin,
+        &symbol_short!("F003"),
+        &sme2,
+        &2_000i128,
+        &600i64,
+        &600u64,
+    );
+
+    let e1 = client.get_escrow(&symbol_short!("F002"));
+    let e2 = client.get_escrow(&symbol_short!("F003"));
+
+    // Each escrow holds its own state independently.
+    assert_eq!(e1.amount, 1_000i128);
+    assert_eq!(e2.amount, 2_000i128);
+    assert_eq!(e1.sme_address, sme);
+    assert_eq!(e2.sme_address, sme2);
+}
+
+/// list_invoices returns all invoice IDs in creation order.
+#[test]
+fn test_factory_list_invoices() {
+    let (_, client, admin, sme) = factory_setup();
+
+    assert_eq!(client.list_invoices().len(), 0);
+
+    client.create_escrow(&admin, &symbol_short!("F004"), &sme, &1_000i128, &500i64, &500u64);
+    client.create_escrow(&admin, &symbol_short!("F005"), &sme, &2_000i128, &600i64, &600u64);
+
+    let list = client.list_invoices();
+    assert_eq!(list.len(), 2);
+    assert_eq!(list.get(0).unwrap(), symbol_short!("F004"));
+    assert_eq!(list.get(1).unwrap(), symbol_short!("F005"));
+}
+
+/// fund via factory updates funded_amount and flips status when target met.
+#[test]
+fn test_factory_fund_partial_then_full() {
+    let (env, client, admin, sme) = factory_setup();
+    let investor = Address::generate(&env);
+
+    client.create_escrow(&admin, &symbol_short!("F006"), &sme, &1_000i128, &500i64, &500u64);
+
+    let e1 = client.fund(&symbol_short!("F006"), &investor, &400i128);
+    assert_eq!(e1.funded_amount, 400i128);
+    assert_eq!(e1.status, 0);
+
+    let e2 = client.fund(&symbol_short!("F006"), &investor, &600i128);
+    assert_eq!(e2.funded_amount, 1_000i128);
+    assert_eq!(e2.status, 1);
+}
+
+/// settle via factory transitions status from funded (1) to settled (2).
+#[test]
+fn test_factory_settle_after_full_funding() {
+    let (env, client, admin, sme) = factory_setup();
+    let investor = Address::generate(&env);
+
+    client.create_escrow(&admin, &symbol_short!("F007"), &sme, &1_000i128, &500i64, &500u64);
+    client.fund(&symbol_short!("F007"), &investor, &1_000i128);
+
+    let settled = client.settle(&symbol_short!("F007"));
+    assert_eq!(settled.status, 2);
+}
+
+/// Duplicate create_escrow for the same invoice_id must panic.
+#[test]
+#[should_panic(expected = "Escrow already exists for this invoice")]
+fn test_factory_duplicate_invoice_panics() {
+    let (_, client, admin, sme) = factory_setup();
+
+    client.create_escrow(&admin, &symbol_short!("F008"), &sme, &1_000i128, &500i64, &500u64);
+    client.create_escrow(&admin, &symbol_short!("F008"), &sme, &1_000i128, &500i64, &500u64);
+}
+
+/// get_escrow for an unknown invoice_id must panic.
+#[test]
+#[should_panic(expected = "Escrow not found for invoice")]
+fn test_factory_get_unknown_invoice_panics() {
+    let (_, client, _, _) = factory_setup();
+    client.get_escrow(&symbol_short!("NOEXIST"));
+}
+
+/// fund on a funded (status=1) escrow must panic.
+#[test]
+#[should_panic(expected = "Escrow not open for funding")]
+fn test_factory_fund_after_funded_panics() {
+    let (env, client, admin, sme) = factory_setup();
+    let investor = Address::generate(&env);
+
+    client.create_escrow(&admin, &symbol_short!("F009"), &sme, &1_000i128, &500i64, &500u64);
+    client.fund(&symbol_short!("F009"), &investor, &1_000i128); // status → 1
+    client.fund(&symbol_short!("F009"), &investor, &1i128);     // must panic
+}
+
+/// settle on an unfunded (status=0) escrow must panic.
+#[test]
+#[should_panic(expected = "Escrow must be funded before settlement")]
+fn test_factory_settle_unfunded_panics() {
+    let (_, client, admin, sme) = factory_setup();
+
+    client.create_escrow(&admin, &symbol_short!("F010"), &sme, &1_000i128, &500i64, &500u64);
+    client.settle(&symbol_short!("F010")); // status is still 0 — must panic
+}
+
+/// Funding one invoice does not affect another invoice's state.
+#[test]
+fn test_factory_fund_does_not_bleed_across_invoices() {
+    let (env, client, admin, sme) = factory_setup();
+    let investor = Address::generate(&env);
+
+    client.create_escrow(&admin, &symbol_short!("F011"), &sme, &500i128, &500i64, &500u64);
+    client.create_escrow(&admin, &symbol_short!("F012"), &sme, &500i128, &500i64, &500u64);
+
+    client.fund(&symbol_short!("F011"), &investor, &500i128); // fully fund F011
+
+    // F012 must remain untouched.
+    let f012 = client.get_escrow(&symbol_short!("F012"));
+    assert_eq!(f012.funded_amount, 0);
+    assert_eq!(f012.status, 0);
+}
+
+/// create_escrow requires admin authorization.
+#[test]
+fn test_factory_create_requires_admin_auth() {
+    let (env, client, admin, sme) = factory_setup();
+
+    client.create_escrow(&admin, &symbol_short!("F013"), &sme, &1_000i128, &500i64, &500u64);
+
+    let auths = env.auths();
+    assert!(
+        auths.iter().any(|(addr, _)| *addr == admin),
+        "admin auth was not recorded for create_escrow"
+    );
+}
+
+/// fund requires investor authorization.
+#[test]
+fn test_factory_fund_requires_investor_auth() {
+    let (env, client, admin, sme) = factory_setup();
+    let investor = Address::generate(&env);
+
+    client.create_escrow(&admin, &symbol_short!("F014"), &sme, &1_000i128, &500i64, &500u64);
+    client.fund(&symbol_short!("F014"), &investor, &500i128);
+
+    let auths = env.auths();
+    assert!(
+        auths.iter().any(|(addr, _)| *addr == investor),
+        "investor auth was not recorded for fund"
+    );
+}
+
+/// settle requires sme_address authorization.
+#[test]
+fn test_factory_settle_requires_sme_auth() {
+    let (env, client, admin, sme) = factory_setup();
+    let investor = Address::generate(&env);
+
+    client.create_escrow(&admin, &symbol_short!("F015"), &sme, &1_000i128, &500i64, &500u64);
+    client.fund(&symbol_short!("F015"), &investor, &1_000i128);
+    client.settle(&symbol_short!("F015"));
+
+    let auths = env.auths();
+    assert!(
+        auths.iter().any(|(addr, _)| *addr == sme),
+        "sme auth was not recorded for settle"
+    );
+}
