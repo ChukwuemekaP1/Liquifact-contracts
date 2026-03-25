@@ -104,100 +104,38 @@ Records an investor contribution. Transitions to `status = 1` when
 | `init` not called         | Panics: `"Escrow not initialized"`      |
 | `funded_amount` overflows | Rust panics (debug) / wraps (release)   |
 
-**State transitions**
+//! # LiquiFact Escrow Contract
+//!
+//! Holds investor funds for an invoice until settlement.
+//!
+//! ### Settlement Sequence
+//! 1. **Initialization**: Admin creates the escrow with `init`.
+//! 2. **Funding**: Investors contribute funds via `fund` until `funding_target` is met (status 0 -> 1).
+//! 3. **Settlement**: SME calls `settle` once the buyer has repaid the invoice (status 1 -> 2).
+//! 4. **Claim**: Investors call `claim` to withdraw their principal plus accrued yield (status 2).
 
-- **init** — Create an invoice escrow (invoice id, SME address, admin address, amount, yield bps, maturity).
+## State transitions
+
+- **init** — Create an invoice escrow. Requires `admin` authorization.
 - **get_escrow** — Read current escrow state.
-- **get_version** — Return the stored schema version number.
-- **fund** — Record investor funding; status becomes "funded" when target is met.
-- **settle** — Mark escrow as settled (buyer paid; investors receive principal + yield).
-- **migrate** — Upgrade storage from an older schema version to the current one (see below).
+- **fund** — Record investor funding. Requires `investor` authorization. Status becomes "funded" (1) when target is met.
+- **settle** — Mark escrow as settled. Requires `sme_address` authorization. Status becomes "settled" (2).
+- **claim** — Investors redeem principal + yield. Requires `investor` authorization.
+- **migrate** — Upgrade storage schema.
 
-### Edge-case test matrix (`escrow/src/test.rs`)
-
-Tests are tagged by risk category in inline comments:
-
-| Category  | Tag       | What is covered |
-|-----------|-----------|-----------------|
-| Happy path | `[HAPPY]` | Full lifecycle, field persistence, `get_escrow` consistency |
-| Auth       | `[AUTH]`  | `require_auth` recorded for admin / investor / SME; panics without auth |
-| State      | `[STATE]` | Double-init, fund-after-funded, fund-after-settled, settle-when-open, double-settle |
-| Uninitialized | `[UNINIT]` | `get_escrow`, `fund`, `settle` all panic before `init` |
-| Boundary   | `[BOUND]` | `amount=1`, `amount=i128::MAX`, `yield_bps=i64::MAX`, `maturity=0`, `maturity=u64::MAX`, overshoot funding, exact-boundary funding |
-| Repeated calls | `[REPEAT]` | Multiple investors accumulate correctly; `get_escrow` is idempotent |
-
----
-
-## Contract migration strategy
-
-### Overview
-
-The escrow contract stores its state as a single [`InvoiceEscrow`](escrow/src/lib.rs) struct under the instance storage key `"escrow"`, alongside a `"version"` key that holds the current schema version (`u32`).
-
-Any change to the struct layout (adding, removing, or retyping a field) is a **breaking schema change** and requires a version bump and a migration path.
-
-### Version history
-
-| Version | Description |
-|---------|-------------|
-| 1       | Initial schema — `invoice_id`, `sme_address`, `amount`, `funding_target`, `funded_amount`, `yield_bps`, `maturity`, `status`, `version` |
-
-### How versioning works
-
-- `SCHEMA_VERSION` in `lib.rs` is the source of truth for the current schema.
-- Every `init` call writes `SCHEMA_VERSION` into both the struct's `version` field and the `"version"` storage key.
-- `get_version()` lets off-chain tooling (indexers, upgrade scripts) read the stored version before deciding whether to call `migrate`.
-
-### Adding a new schema version (step-by-step)
-
-1. **Bump `SCHEMA_VERSION`** in `lib.rs` (e.g. `1` to `2`).
-2. **Keep the old struct** — add a `legacy` module (or a type alias like `InvoiceEscrowV1`) so the old bytes can still be deserialized.
-3. **Add a migration arm** in `LiquifactEscrow::migrate`:
-   ```rust
-   if from_version == 1 {
-       let old: InvoiceEscrowV1 = env.storage().instance()
-           .get(&symbol_short!("escrow")).unwrap();
-       let new = InvoiceEscrow {
-           // spread old fields, default new ones
-           new_field: default_value,
-           version: 2,
-           ..old.into()
-       };
-       env.storage().instance().set(&symbol_short!("escrow"), &new);
-       env.storage().instance().set(&symbol_short!("version"), &2u32);
-   }
-   ```
-4. **Write a test** in `test.rs` that manually writes the old struct bytes into storage and asserts the migrated state is correct.
-5. **Gate `migrate` behind admin auth** before deploying to production (see security notes below).
-
-### Deployment upgrade flow
-
+## Payout formula
+```text
+investor_payout = principal + (principal * yield_bps / 10_000)
 ```
-1. Deploy new WASM (bump SCHEMA_VERSION, add migration arm)
-2. Call get_version()  ->  confirm stored version == N
-3. Call migrate(N)     ->  storage upgraded to N+1
-4. Call get_version()  ->  confirm stored version == N+1
-5. Resume normal operations
-```
-
-The contract rejects `migrate` calls that:
-- Pass a `from_version` that does not match the stored version (prevents accidental double-migration).
-- Pass a `from_version >= SCHEMA_VERSION` (already up to date).
-
-### Security notes
-
-- **Re-initialization guard** — `init` panics if the escrow is already initialized, preventing state overwrite.
-- **`migrate` must be admin-gated in production** — the current implementation is open for testability. Before mainnet deployment, add `admin_address.require_auth()` at the top of `migrate` so only the contract deployer can trigger upgrades.
-- **No silent data loss** — migration arms must explicitly handle every field. Defaulting a field to zero/false is intentional and must be documented in the version history table above.
-- **Immutable history** — old migration arms should never be removed; they ensure any instance at any historical version can be brought forward step-by-step.
-
----
 
 ## Security & Authorization
 
-Currently, the contract methods (`init`, `fund`, `settle`) **do not enforce authorization** via `require_auth()`. They rely solely on state-machine guards (e.g. checking if `status == 0` before funding).
-
-> **Warning:** This represents an authentication gap. Any caller can trigger these functions. Negative tests have been added to track this gap and ensure proper exceptions are thrown when the contract is in an invalid state.
+The contract enforces strict authorization via `require_auth()`:
+- `init`: Only the designated `admin` can initialize.
+- `fund`: Only the `investor` can fund on their own behalf.
+- `settle`: Only the `sme_address` (beneficiary) can trigger settlement.
+- `claim`: Only the `investor` can claim their own payout.
+- `update_maturity`: Only the `admin` can update maturity (only in Open state).
 
 ---
 
