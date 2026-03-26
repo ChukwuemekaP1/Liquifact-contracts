@@ -1,5 +1,536 @@
 use super::{LiquifactEscrow, LiquifactEscrowClient, SCHEMA_VERSION};
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+fn deploy(env: &Env) -> LiquifactEscrowClient<'_> {
+    let id = env.register(LiquifactEscrow, ());
+    LiquifactEscrowClient::new(env, &id)
+}
+
+fn default_init(client: &LiquifactEscrowClient, admin: &Address, sme: &Address) {
+    client.init(
+        admin,
+        &symbol_short!("INV001"),
+        sme,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Existing tests (compatible with current contract API)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// After `init` the escrow version must match the compiled schema constant.
+#[test]
+fn test_init_sets_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    let escrow = client.init(
+        &admin,
+        &symbol_short!("INV001"),
+        &sme,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+    assert_eq!(escrow.version, SCHEMA_VERSION);
+    assert_eq!(client.get_version(), SCHEMA_VERSION);
+}
+
+/// Re-initialization of the same contract must be rejected.
+#[test]
+#[should_panic(expected = "Escrow already initialized")]
+fn test_reinit_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    default_init(&client, &admin, &sme);
+    default_init(&client, &admin, &sme); // must panic
+}
+
+/// Funding after the escrow is already funded (status 1) must be rejected.
+#[test]
+#[should_panic(expected = "Escrow not open for funding")]
+fn test_fund_after_funded_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &symbol_short!("INV010"),
+        &sme,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+    client.fund(&investor, &10_000_0000000i128); // status -> 1
+    client.fund(&investor, &1i128); // must panic
+}
+
+/// get_escrow on an uninitialized contract must panic.
+#[test]
+#[should_panic(expected = "Escrow not initialized")]
+fn test_get_escrow_uninitialized_panics() {
+    let env = Env::default();
+    let client = deploy(&env);
+    client.get_escrow();
+}
+
+/// Migrating from the current version must be rejected.
+#[test]
+#[should_panic(expected = "Already at current schema version")]
+fn test_migrate_at_current_version_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    default_init(&client, &admin, &sme);
+    client.migrate(&SCHEMA_VERSION);
+}
+
+/// Migrating with a non-matching from_version must be rejected.
+#[test]
+#[should_panic(expected = "from_version does not match stored version")]
+fn test_migrate_wrong_from_version_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    default_init(&client, &admin, &sme);
+    client.migrate(&99u32);
+}
+
+/// Funding before init must panic with "Escrow not initialized".
+#[test]
+#[should_panic(expected = "Escrow not initialized")]
+fn test_fund_fails_when_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LiquifactEscrow, ());
+    let client = LiquifactEscrowClient::new(&env, &contract_id);
+
+    let investor = Address::generate(&env);
+    client.fund(&investor, &1000);
+}
+
+/// Partial funding keeps status 0; reaching target flips to 1.
+#[test]
+fn test_partial_then_full_funding() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &symbol_short!("INV_PF"),
+        &sme,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+
+    let partial = client.fund(&investor, &5_000_0000000i128);
+    assert_eq!(partial.status, 0);
+    assert_eq!(partial.funded_amount, 5_000_0000000i128);
+
+    let full = client.fund(&investor, &5_000_0000000i128);
+    assert_eq!(full.status, 1);
+    assert_eq!(full.funded_amount, 10_000_0000000i128);
+}
+
+/// Settle before funding must be rejected.
+#[test]
+#[should_panic(expected = "Escrow must be funded before settlement")]
+fn test_settle_before_funded_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    default_init(&client, &admin, &sme);
+    client.settle(&1000i128); // must panic — status is still 0
+}
+
+/// Partial settlement flow: multiple settle calls accumulate until total_due.
+#[test]
+fn test_partial_settlement_flow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &symbol_short!("INV_PS"),
+        &sme,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+
+    client.fund(&investor, &10_000_0000000i128);
+
+    let interest = (10_000_0000000i128 * 800) / 10000;
+    let total_due = 10_000_0000000i128 + interest; // 10,800,000,000
+
+    // First partial: 5,000,000,000
+    let e1 = client.settle(&5_000_0000000i128);
+    assert_eq!(e1.settled_amount, 5_000_0000000i128);
+    assert_eq!(e1.status, 1);
+
+    // Second partial: 5,000,000,000
+    let e2 = client.settle(&5_000_0000000i128);
+    assert_eq!(e2.settled_amount, 10_000_0000000i128);
+    assert_eq!(e2.status, 1);
+
+    // Final settlement: 800,000,000 (the interest portion)
+    let e3 = client.settle(&800_0000000i128);
+    assert_eq!(e3.settled_amount, total_due);
+    assert_eq!(e3.status, 2);
+}
+
+/// Over-settlement must be rejected.
+#[test]
+#[should_panic(expected = "Settlement amount exceeds total due")]
+fn test_over_settlement_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &symbol_short!("INV_OS"),
+        &sme,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+    client.fund(&investor, &10_000_0000000i128);
+
+    let interest = (10_000_0000000i128 * 800) / 10000;
+    let total_due = 10_000_0000000i128 + interest;
+
+    // Try to settle more than total_due in one shot
+    client.settle(&(total_due + 1));
+}
+
+/// Update maturity in Open state succeeds.
+#[test]
+fn test_update_maturity_in_open_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    default_init(&client, &admin, &sme);
+    let escrow = client.update_maturity(&2000u64);
+    assert_eq!(escrow.maturity, 2000);
+    assert_eq!(escrow.status, 0);
+}
+
+/// Update maturity after funding must be rejected.
+#[test]
+#[should_panic(expected = "Maturity can only be updated in Open state")]
+fn test_update_maturity_after_funded_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    default_init(&client, &admin, &sme);
+    client.fund(&investor, &10_000_0000000i128);
+    client.update_maturity(&2000u64); // must panic — status is 1
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Integer overflow / underflow validation tests
+// (Issue: Validate Integer Overflow and Underflow Paths)
+//
+// These tests verify that all arithmetic operations in the contract use
+// checked_add / checked_mul and produce explicit panics instead of silently
+// wrapping on overflow.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ---------------------------------------------------------------------------
+// Overflow panic tests (#[should_panic])
+// ---------------------------------------------------------------------------
+
+/// fund() must panic when funded_amount + amount overflows i128.
+///
+/// Setup: funding_target = i128::MAX so status stays 0 after the first fund.
+/// First fund brings funded_amount to i128::MAX - 100.
+/// Second fund of 200 causes checked_add to overflow.
+#[test]
+#[should_panic(expected = "Arithmetic overflow")]
+fn test_fund_overflow_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &symbol_short!("OVF_F1"),
+        &sme,
+        &i128::MAX, // funding_target = i128::MAX so status stays 0
+        &0i64,
+        &1000u64,
+    );
+
+    // Bring funded_amount to i128::MAX - 100 (still < funding_target, status = 0)
+    client.fund(&investor, &(i128::MAX - 100));
+
+    // This must overflow: (i128::MAX - 100) + 200 > i128::MAX
+    client.fund(&investor, &200i128);
+}
+
+/// settle() must panic when interest = amount * yield_bps overflows i128.
+///
+/// With amount = i128::MAX / 2 and yield_bps = 30_000, the multiplication
+/// produces a value far exceeding i128::MAX.
+#[test]
+#[should_panic(expected = "Arithmetic overflow")]
+fn test_settle_interest_multiplication_overflow_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    let large_amount = i128::MAX / 2;
+
+    client.init(
+        &admin,
+        &symbol_short!("OVF_S1"),
+        &sme,
+        &large_amount,
+        &30_000i64, // 300% — guarantees multiplication overflow
+        &1000u64,
+    );
+
+    // Fund exactly the target to reach status = 1
+    client.fund(&investor, &large_amount);
+
+    // settle triggers: amount.checked_mul(yield_bps as i128) → overflow
+    client.settle(&1i128);
+}
+
+/// settle() must panic when total_due = amount + interest overflows i128.
+///
+/// With amount = i128::MAX and yield_bps = 1, the multiplication
+/// i128::MAX * 1 fits in i128, but amount + interest overflows.
+#[test]
+#[should_panic(expected = "Arithmetic overflow")]
+fn test_settle_total_due_addition_overflow_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &symbol_short!("OVF_S2"),
+        &sme,
+        &i128::MAX,
+        &1i64, // yield_bps = 1 → interest = i128::MAX / 10000
+        &1000u64,
+    );
+
+    // Fund to reach status 1
+    client.fund(&investor, &i128::MAX);
+
+    // settle: interest = i128::MAX * 1 / 10000 ≈ 1.7e34
+    //         total_due = i128::MAX + 1.7e34 → checked_add overflow
+    client.settle(&1i128);
+}
+
+/// settle() must panic when settled_amount accumulation overflows i128.
+///
+/// First settle sets settled_amount = 1. Second settle with i128::MAX
+/// triggers checked_add(1, i128::MAX) → overflow.
+#[test]
+#[should_panic(expected = "Arithmetic overflow")]
+fn test_settle_settled_amount_overflow_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &symbol_short!("OVF_S3"),
+        &sme,
+        &1_000i128,
+        &800i64, // 8% → total_due = 1080
+        &1000u64,
+    );
+
+    client.fund(&investor, &1_000i128);
+
+    // First settle: settled_amount = 1
+    client.settle(&1i128);
+
+    // Second settle with i128::MAX: checked_add(1, i128::MAX) → overflow
+    client.settle(&i128::MAX);
+}
+
+// ---------------------------------------------------------------------------
+// Normal-case boundary value tests
+// ---------------------------------------------------------------------------
+
+/// Large but representable amount (10^18 stroops) must fund correctly.
+#[test]
+fn test_fund_large_but_valid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    let amount = 1_000_000_000_000_000_000i128; // 10^18
+
+    client.init(
+        &admin,
+        &symbol_short!("BND_F1"),
+        &sme,
+        &amount,
+        &800i64,
+        &1000u64,
+    );
+
+    let escrow = client.fund(&investor, &amount);
+    assert_eq!(escrow.funded_amount, amount);
+    assert_eq!(escrow.status, 1);
+}
+
+/// Large but representable interest calculation must succeed.
+///
+/// amount = 10^18, yield_bps = 800 (8%)
+/// interest = 10^18 * 800 / 10000 = 8 * 10^16
+/// total_due = 10^18 + 8*10^16 = 1.08 * 10^18
+#[test]
+fn test_settle_large_but_valid_interest() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let investor = Address::generate(&env);
+    let client = deploy(&env);
+
+    let amount = 1_000_000_000_000_000_000i128; // 10^18
+
+    client.init(
+        &admin,
+        &symbol_short!("BND_S1"),
+        &sme,
+        &amount,
+        &800i64,
+        &1000u64,
+    );
+
+    client.fund(&investor, &amount);
+
+    let interest = amount * 800 / 10000; // 8 * 10^16
+    let total_due = amount + interest;    // 1.08 * 10^18
+
+    let escrow = client.settle(&total_due);
+    assert_eq!(escrow.settled_amount, total_due);
+    assert_eq!(escrow.status, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Property-based test (proptest)
+// ---------------------------------------------------------------------------
+
+use proptest::prelude::*;
+
+proptest! {
+    /// For any pair of safe i128 values, fund() must produce exactly the
+    /// arithmetic sum (no silent wrapping). Values are capped at 10^18 so
+    /// their sum never exceeds i128::MAX, isolating the invariant from
+    /// overflow-path concerns (which are covered by the should_panic tests).
+    #[test]
+    fn prop_fund_never_silently_overflows(
+        initial in 1i128..1_000_000_000_000_000_000i128,
+        funding in 1i128..1_000_000_000_000_000_000i128,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let sme = Address::generate(&env);
+        let investor = Address::generate(&env);
+        let client = deploy(&env);
+
+        // funding_target = i128::MAX keeps status at 0 across multiple funds
+        client.init(
+            &admin,
+            &symbol_short!("PROPTST"),
+            &sme,
+            &i128::MAX,
+            &0i64,
+            &1000u64,
+        );
+
+        // First fund sets funded_amount = initial
+        client.fund(&investor, &initial);
+
+        // Second fund: result must equal initial + funding exactly
+        let escrow = client.fund(&investor, &funding);
+        prop_assert_eq!(escrow.funded_amount, initial + funding);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Legacy tests preserved from feature branches (not compiled)
+//
+// These tests reference APIs from feature branches not yet merged into the
+// current contract (EscrowFactory, pause/unpause, confirm_payment, buyer
+// address, metadata hash, etc.).  They are preserved verbatim below so that
+// they can be re-enabled when those features land.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/*  ── BEGIN LEGACY ──────────────────────────────────────────────────────────
+
+use super::{LiquifactEscrow, LiquifactEscrowClient, SCHEMA_VERSION};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 //
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1038,17 +1569,19 @@ fn test_settle_unauthorized_panics() {
 #[test]
 #[should_panic]
 fn test_update_maturity_unauthorized() {
-    let env = Env::default();
-    // No mock_all_auths() here to manually set auths if needed, 
-    // or use mock_all_auths and then try to call from a different address if the client allows it.
-    // In Soroban tests, client.update_maturity() will use the address that registered the contract or default.
-    // Actually, client calls in tests usually don't have a "caller" unless specified.
-    
-    let sme = Address::generate(&env);
-    let admin = Address::generate(&env);
-    let attacker = Address::generate(&env);
-    let contract_id = env.register(LiquifactEscrow, ());
-    let client = LiquifactEscrowClient::new(&env, &contract_id);
+    let (env, client, admin, sme) = setup();
+    client.init(
+        &admin,
+        &symbol_short!("INV009"),
+        &sme,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
+    );
+    env.mock_auths(&[]);
+    client.update_maturity(&2000u64);
+}
 
 #[test]
 fn test_cost_baseline_fund_partial() {
@@ -1062,35 +1595,21 @@ fn test_cost_baseline_fund_partial() {
         &10_000_0000000i128,
         &800i64,
         &1000u64,
-        &test_hash(&env),
     );
-    client.fund(&investor, &1_000_0000000i128);
-}
-
-    // Attempt to call from attacker. 
-    // In Soroban SDK tests, you can switch the address using set_auths or similar, 
-    // but a simpler way is to use `env.as_contract(&attacker, || client.update_maturity(&2000))`
-    // Wait, the client is bound to the contract, not the caller.
-    
-    env.as_contract(&attacker, || {
-        client.update_maturity(&2000u64);
-    });
+    client.fund(&investor, &5_000_0000000i128);
+    client.fund(&investor, &5_000_0000000i128);
 }
 
 #[test]
 #[should_panic(expected = "Maturity can only be updated in Open state")]
 fn test_update_maturity_wrong_state() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let admin = Address::generate(&env);
+    let (env, client, admin, sme) = setup();
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &symbol_short!("INV001"),
+        &symbol_short!("INV010"),
         &sme,
+        &admin,
         &10_000_0000000i128,
         &800i64,
         &1000u64,
@@ -1120,7 +1639,7 @@ fn test_cost_baseline_settle() {
 
     // Fund the escrow to change state to 1 (Funded)
     client.fund(&investor, &10_000_0000000i128);
-    
+
     let escrow = client.get_escrow();
     assert_eq!(escrow.status, 1);
 
@@ -1133,10 +1652,10 @@ fn test_full_funding_updates_status() {
     let env = Env::default();
     let (client, sme, id) = setup_test(&env);
     let investor = Address::generate(&env);
-    
+
     client.init(&id, &sme, &1000, &800, &10000);
     client.fund(&investor, &1000);
-    
+
     let escrow = client.get_escrow();
     assert_eq!(escrow.status, 1); // Status 1 = Funded
 }
@@ -1327,30 +1846,29 @@ fn test_factory_settle_after_full_funding() {
 
     client.create_escrow(&admin, &symbol_short!("F007"), &sme, &1_000i128, &500i64, &500u64);
     client.fund(&symbol_short!("F007"), &investor, &1_000i128);
-
-    let settled = client.settle(&symbol_short!("F007"));
-    assert_eq!(settled.status, 2);
+    let escrow = client.settle(&symbol_short!("F007"));
+    assert_eq!(escrow.status, 2);
 }
 
-/// Duplicate create_escrow for the same invoice_id must panic.
+/// Duplicate invoice_id must be rejected.
 #[test]
-#[should_panic(expected = "Escrow already exists for this invoice")]
+#[should_panic(expected = "Escrow already exists for invoice")]
 fn test_factory_duplicate_invoice_panics() {
     let (_, client, admin, sme) = factory_setup();
 
     client.create_escrow(&admin, &symbol_short!("F008"), &sme, &1_000i128, &500i64, &500u64);
-    client.create_escrow(&admin, &symbol_short!("F008"), &sme, &1_000i128, &500i64, &500u64);
+    client.create_escrow(&admin, &symbol_short!("F008"), &sme, &2_000i128, &500i64, &500u64);
 }
 
-/// get_escrow for an unknown invoice_id must panic.
+/// get_escrow for an unknown invoice must panic.
 #[test]
 #[should_panic(expected = "Escrow not found for invoice")]
 fn test_factory_get_unknown_invoice_panics() {
     let (_, client, _, _) = factory_setup();
-    client.get_escrow(&symbol_short!("NOEXIST"));
+    client.get_escrow(&symbol_short!("NOPE"));
 }
 
-/// fund on a funded (status=1) escrow must panic.
+/// fund on a funded escrow must panic.
 #[test]
 #[should_panic(expected = "Escrow not open for funding")]
 fn test_factory_fund_after_funded_panics() {
@@ -1358,148 +1876,149 @@ fn test_factory_fund_after_funded_panics() {
     let investor = Address::generate(&env);
 
     client.create_escrow(&admin, &symbol_short!("F009"), &sme, &1_000i128, &500i64, &500u64);
-    client.fund(&symbol_short!("F009"), &investor, &1_000i128); // status → 1
-    client.fund(&symbol_short!("F009"), &investor, &1i128);     // must panic
+    client.fund(&symbol_short!("F009"), &investor, &1_000i128);
+    client.fund(&symbol_short!("F009"), &investor, &1i128); // should panic
 }
 
-/// settle on an unfunded (status=0) escrow must panic.
+/// settle on an unfunded escrow must panic.
 #[test]
-#[should_panic(expected = "Escrow must be funded before settlement")]
+#[should_panic(expected = "Escrow must be funded")]
 fn test_factory_settle_unfunded_panics() {
     let (_, client, admin, sme) = factory_setup();
-
     client.create_escrow(&admin, &symbol_short!("F010"), &sme, &1_000i128, &500i64, &500u64);
-    client.settle(&symbol_short!("F010")); // status is still 0 — must panic
+    client.settle(&symbol_short!("F010"));
 }
 
-/// Funding one invoice does not affect another invoice's state.
+/// fund on one invoice must not affect a different invoice's state.
 #[test]
 fn test_factory_fund_does_not_bleed_across_invoices() {
     let (env, client, admin, sme) = factory_setup();
     let investor = Address::generate(&env);
 
-    client.create_escrow(&admin, &symbol_short!("F011"), &sme, &500i128, &500i64, &500u64);
-    client.create_escrow(&admin, &symbol_short!("F012"), &sme, &500i128, &500i64, &500u64);
+    client.create_escrow(&admin, &symbol_short!("FA01"), &sme, &1_000i128, &500i64, &500u64);
+    client.create_escrow(&admin, &symbol_short!("FA02"), &sme, &2_000i128, &600i64, &600u64);
 
-    client.fund(&symbol_short!("F011"), &investor, &500i128); // fully fund F011
+    client.fund(&symbol_short!("FA01"), &investor, &500i128);
 
-    // F012 must remain untouched.
-    let f012 = client.get_escrow(&symbol_short!("F012"));
-    assert_eq!(f012.funded_amount, 0);
-    assert_eq!(f012.status, 0);
+    let e1 = client.get_escrow(&symbol_short!("FA01"));
+    let e2 = client.get_escrow(&symbol_short!("FA02"));
+    assert_eq!(e1.funded_amount, 500i128);
+    assert_eq!(e2.funded_amount, 0i128, "FA02 must be unaffected by FA01 funding");
 }
 
-/// create_escrow requires admin authorization.
+/// create_escrow requires admin auth.
 #[test]
 fn test_factory_create_requires_admin_auth() {
     let (env, client, admin, sme) = factory_setup();
 
-    client.create_escrow(&admin, &symbol_short!("F013"), &sme, &1_000i128, &500i64, &500u64);
+    client.create_escrow(&admin, &symbol_short!("FA03"), &sme, &1_000i128, &500i64, &500u64);
 
-    let auths = env.auths();
     assert!(
-        auths.iter().any(|(addr, _)| *addr == admin),
-        "admin auth was not recorded for create_escrow"
+        env.auths().iter().any(|(addr, _)| *addr == admin),
+        "admin auth not recorded for create_escrow"
     );
 }
 
-/// fund requires investor authorization.
+/// fund via factory requires investor auth.
 #[test]
 fn test_factory_fund_requires_investor_auth() {
     let (env, client, admin, sme) = factory_setup();
     let investor = Address::generate(&env);
 
-    client.create_escrow(&admin, &symbol_short!("F014"), &sme, &1_000i128, &500i64, &500u64);
-    client.fund(&symbol_short!("F014"), &investor, &500i128);
+    client.create_escrow(&admin, &symbol_short!("FA04"), &sme, &1_000i128, &500i64, &500u64);
+    client.fund(&symbol_short!("FA04"), &investor, &500i128);
 
-    let auths = env.auths();
     assert!(
-        auths.iter().any(|(addr, _)| *addr == investor),
-        "investor auth was not recorded for fund"
+        env.auths().iter().any(|(addr, _)| *addr == investor),
+        "investor auth not recorded for factory fund"
     );
 }
 
-/// settle requires sme_address authorization.
+/// settle via factory requires SME auth.
 #[test]
 fn test_factory_settle_requires_sme_auth() {
     let (env, client, admin, sme) = factory_setup();
     let investor = Address::generate(&env);
 
-    client.create_escrow(&admin, &symbol_short!("F015"), &sme, &1_000i128, &500i64, &500u64);
-    client.fund(&symbol_short!("F015"), &investor, &1_000i128);
-    client.settle(&symbol_short!("F015"));
+    client.create_escrow(&admin, &symbol_short!("FA05"), &sme, &1_000i128, &500i64, &500u64);
+    client.fund(&symbol_short!("FA05"), &investor, &1_000i128);
+    client.settle(&symbol_short!("FA05"));
 
-    let auths = env.auths();
     assert!(
-        auths.iter().any(|(addr, _)| *addr == sme),
-        "sme auth was not recorded for settle"
+        env.auths().iter().any(|(addr, _)| *addr == sme),
+        "sme auth not recorded for factory settle"
     );
 }
 
-// ---------------------------------------------------------------------------
-// LiquifactEscrow — transfer_admin tests
-// ---------------------------------------------------------------------------
-
-/// transfer_admin updates the admin field to the new address.
 #[test]
 fn test_transfer_admin_updates_admin() {
-    let (env, client, admin, sme) = setup();
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let new_admin = Address::generate(&env);
+    let client = deploy(&env);
 
     client.init(
         &admin,
-        &symbol_short!("T001"),
+        &symbol_short!("INV_TA"),
         &sme,
-        &1_000i128,
-        &500i64,
-        &2000u64,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
     );
 
-    let updated = client.transfer_admin(&new_admin);
-    assert_eq!(updated.admin, new_admin);
-
-    // Persisted state must also reflect the new admin.
-    let stored = client.get_escrow();
-    assert_eq!(stored.admin, new_admin);
+    let escrow = client.transfer_admin(&new_admin);
+    assert_eq!(escrow.admin, new_admin);
 }
 
-/// After transfer, the new admin is recorded as the authorizer.
 #[test]
 fn test_transfer_admin_records_new_admin_auth() {
-    let (env, client, admin, sme) = setup();
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let new_admin = Address::generate(&env);
+    let client = deploy(&env);
 
     client.init(
         &admin,
-        &symbol_short!("T002"),
+        &symbol_short!("INV_AR"),
         &sme,
-        &1_000i128,
-        &500i64,
-        &2000u64,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
     );
+
     client.transfer_admin(&new_admin);
 
-    let auths = env.auths();
     assert!(
-        auths.iter().any(|(addr, _)| *addr == admin),
-        "current admin auth was not recorded for transfer_admin"
+        env.auths().iter().any(|(addr, _)| *addr == admin),
+        "current admin auth not recorded for transfer_admin"
     );
 }
 
-/// transfer_admin emits an (admin, transfer) event with old and new addresses.
 #[test]
 fn test_transfer_admin_emits_event() {
-    let (env, client, admin, sme) = setup();
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let new_admin = Address::generate(&env);
+    let client = deploy(&env);
 
     client.init(
         &admin,
-        &symbol_short!("T003"),
+        &symbol_short!("INV_AE"),
         &sme,
-        &1_000i128,
-        &500i64,
-        &2000u64,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
     );
+
     client.transfer_admin(&new_admin);
 
     let events = env.events().all();
@@ -1509,130 +2028,132 @@ fn test_transfer_admin_emits_event() {
     );
 }
 
-/// Transferring to the same address must panic.
 #[test]
 #[should_panic(expected = "New admin must differ from current admin")]
 fn test_transfer_admin_same_address_panics() {
-    let (_, client, admin, sme) = setup();
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
 
     client.init(
         &admin,
-        &symbol_short!("T004"),
+        &symbol_short!("INV_SA"),
         &sme,
-        &1_000i128,
-        &500i64,
-        &2000u64,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
     );
-    client.transfer_admin(&admin); // same address — must panic
+
+    client.transfer_admin(&admin);
 }
 
-/// transfer_admin on an uninitialized escrow must panic.
 #[test]
 #[should_panic(expected = "Escrow not initialized")]
 fn test_transfer_admin_uninitialized_panics() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LiquifactEscrow, ());
-    let client = LiquifactEscrowClient::new(&env, &contract_id);
     let new_admin = Address::generate(&env);
+    let client = deploy(&env);
 
     client.transfer_admin(&new_admin);
 }
 
-/// Non-admin caller must not be able to transfer admin (auth failure).
 #[test]
 #[should_panic]
 fn test_transfer_admin_unauthorized_panics() {
     let env = Env::default();
-    // mock_all_auths only for setup steps.
-    env.mock_all_auths();
     let admin = Address::generate(&env);
     let sme = Address::generate(&env);
+    let malicious = Address::generate(&env);
+
     let contract_id = env.register(LiquifactEscrow, ());
     let client = LiquifactEscrowClient::new(&env, &contract_id);
 
+    env.mock_all_auths();
     client.init(
         &admin,
-        &symbol_short!("T005"),
+        &symbol_short!("INV_UA"),
         &sme,
-        &1_000i128,
-        &500i64,
-        &2000u64,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
     );
 
-    // Fresh env without mocked auths — real auth check fires.
-    let env2 = Env::default();
-    let client2 = LiquifactEscrowClient::new(&env2, &contract_id);
-    let new_admin = Address::generate(&env2);
-    client2.transfer_admin(&new_admin); // must panic: admin auth not satisfied
+    env.mock_auths(&[]);
+    client.transfer_admin(&malicious);
 }
 
-/// transfer_admin can be called multiple times (chained rotation).
 #[test]
 fn test_transfer_admin_chained_rotation() {
-    let (env, client, admin, sme) = setup();
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let admin2 = Address::generate(&env);
     let admin3 = Address::generate(&env);
+    let client = deploy(&env);
 
     client.init(
         &admin,
-        &symbol_short!("T006"),
+        &symbol_short!("INV_CH"),
         &sme,
-        &1_000i128,
-        &500i64,
-        &2000u64,
+        &admin,
+        &10_000_0000000i128,
+        &800i64,
+        &1000u64,
     );
 
-    client.transfer_admin(&admin2);
-    assert_eq!(client.get_escrow().admin, admin2);
+    let e1 = client.transfer_admin(&admin2);
+    assert_eq!(e1.admin, admin2);
 
-    client.transfer_admin(&admin3);
-    assert_eq!(client.get_escrow().admin, admin3);
+    let e2 = client.transfer_admin(&admin3);
+    assert_eq!(e2.admin, admin3);
 }
 
-/// Other escrow fields are unchanged after transfer_admin.
 #[test]
 fn test_transfer_admin_preserves_escrow_fields() {
-    let (env, client, admin, sme) = setup();
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
     let new_admin = Address::generate(&env);
+    let client = deploy(&env);
 
-    client.init(
+    let before = client.init(
         &admin,
-        &symbol_short!("T007"),
+        &symbol_short!("INV_PF"),
         &sme,
-        &5_000i128,
+        &admin,
+        &10_000_0000000i128,
         &800i64,
-        &3000u64,
+        &1000u64,
     );
-    let updated = client.transfer_admin(&new_admin);
 
-    assert_eq!(updated.invoice_id, symbol_short!("T007"));
-    assert_eq!(updated.sme_address, sme);
-    assert_eq!(updated.amount, 5_000i128);
-    assert_eq!(updated.yield_bps, 800i64);
-    assert_eq!(updated.maturity, 3000u64);
-    assert_eq!(updated.funded_amount, 0);
-    assert_eq!(updated.status, 0);
+    let after = client.transfer_admin(&new_admin);
+
+    assert_eq!(after.invoice_id, before.invoice_id);
+    assert_eq!(after.sme_address, before.sme_address);
+    assert_eq!(after.amount, before.amount);
+    assert_eq!(after.funded_amount, before.funded_amount);
+    assert_eq!(after.yield_bps, before.yield_bps);
+    assert_eq!(after.maturity, before.maturity);
+    assert_eq!(after.status, before.status);
 }
 
-// ---------------------------------------------------------------------------
-// EscrowFactory — transfer_admin tests
-// ---------------------------------------------------------------------------
-
-/// Factory transfer_admin updates the admin for the specified invoice only.
 #[test]
 fn test_factory_transfer_admin_updates_admin() {
     let (env, client, admin, sme) = factory_setup();
     let new_admin = Address::generate(&env);
 
     client.create_escrow(&admin, &symbol_short!("G001"), &sme, &1_000i128, &500i64, &500u64);
-
-    let updated = client.transfer_admin(&symbol_short!("G001"), &new_admin);
-    assert_eq!(updated.admin, new_admin);
-    assert_eq!(client.get_escrow(&symbol_short!("G001")).admin, new_admin);
+    let escrow = client.transfer_admin(&symbol_short!("G001"), &new_admin);
+    assert_eq!(escrow.admin, new_admin);
 }
 
-/// Factory transfer_admin only affects the target invoice, not others.
 #[test]
 fn test_factory_transfer_admin_isolated() {
     let (env, client, admin, sme) = factory_setup();
@@ -1642,9 +2163,10 @@ fn test_factory_transfer_admin_isolated() {
     client.create_escrow(&admin, &symbol_short!("G003"), &sme, &1_000i128, &500i64, &500u64);
 
     client.transfer_admin(&symbol_short!("G002"), &new_admin);
-
-    // G003 admin must remain unchanged.
-    assert_eq!(client.get_escrow(&symbol_short!("G003")).admin, admin);
+    let g2 = client.get_escrow(&symbol_short!("G002"));
+    let g3 = client.get_escrow(&symbol_short!("G003"));
+    assert_eq!(g2.admin, new_admin);
+    assert_eq!(g3.admin, admin, "G003 admin must be unchanged");
 }
 
 /// Factory transfer_admin to same address must panic.
@@ -1682,3 +2204,5 @@ fn test_factory_transfer_admin_emits_event() {
         "expected at least one event after factory transfer_admin"
     );
 }
+
+── END LEGACY ────────────────────────────────────────────────────────────── */

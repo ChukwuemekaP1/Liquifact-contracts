@@ -45,9 +45,10 @@ pub struct InvoiceEscrow {
     pub admin: Address,
     /// SME wallet that receives liquidity and authorizes settlement
     pub sme_address: Address,
-    /// Administrator authorized to update maturity
-    pub admin: Address,
-    /// Total amount in smallest unit (e.g. stroops for XLM)
+    /// Total amount in smallest unit (e.g. stroops for XLM).
+    ///
+    /// Expected to be positive; validated at entry points. Arithmetic with
+    /// `yield_bps` uses `checked_mul` to prevent overflow even at `i128` scale.
     pub amount: i128,
 
     /// Investor funding target.  Currently equal to `amount`; may diverge
@@ -56,10 +57,16 @@ pub struct InvoiceEscrow {
 
     /// Running total committed by investors so far (starts at 0).
     /// Status transitions to `1` (funded) the moment this reaches `funding_target`.
+    /// Accumulation uses `checked_add` to guard against overflow at `i128` bounds.
     pub funded_amount: i128,
-    /// Total settled (paid by buyer) so far
+    /// Total settled (paid by buyer) so far.
+    /// Accumulation uses `checked_add` to guard against overflow at `i128` bounds.
     pub settled_amount: i128,
-    /// Yield basis points (e.g. 800 = 8%)
+    /// Yield basis points (e.g. 800 = 8%).
+    ///
+    /// Stored as `i64` for Soroban compatibility. When used in arithmetic
+    /// with `i128` amounts, the widening cast `yield_bps as i128` is always
+    /// lossless because `i64::MAX` (9.2e18) < `i128::MAX` (1.7e38).
     pub yield_bps: i64,
 
     /// Ledger timestamp at which the invoice matures and settlement is expected.
@@ -235,22 +242,19 @@ impl LiquifactEscrow {
         admin: Address,
         invoice_id: Symbol,
         sme_address: Address,
-        admin: Address,
         amount: i128,
-        yield_bps: u32,
+        yield_bps: i64,
         maturity: u64,
-        funding_deadline: u64, // NEW
     ) -> InvoiceEscrow {
         // Prevent re-initialization
         assert!(
-            !env.storage().instance().has(&DataKey::Escrow),
+            !env.storage().instance().has(&ESCROW_KEY),
             "Escrow already initialized"
         );
         let escrow = InvoiceEscrow {
             invoice_id: invoice_id.clone(),
             admin: admin.clone(),
             sme_address: sme_address.clone(),
-            admin: admin.clone(),
             amount,
             funding_target: amount,
             funded_amount: 0,
@@ -341,7 +345,6 @@ impl LiquifactEscrow {
     }
 
     /// Record investor funding. In production, this would be called with token transfer.
-    pub fn fund(env: Env, investor: Address, amount: i128) -> InvoiceEscrow {
     ///
     /// # Authorization
     /// Requires authorization from `investor`. Each investor authorizes their
@@ -354,12 +357,15 @@ impl LiquifactEscrow {
         investor.require_auth();
 
         let mut escrow = Self::get_escrow(env.clone());
-        
+
         // Sanity Check: Reject zero or negative funding amounts
         assert!(amount > 0, "Funding amount must be positive");
         assert!(escrow.status == 0, "Escrow not open for funding");
 
-        escrow.funded_amount += amount;
+        escrow.funded_amount = escrow
+            .funded_amount
+            .checked_add(amount)
+            .expect("Arithmetic overflow: funded_amount + amount exceeds i128 bounds");
         if escrow.funded_amount >= escrow.funding_target {
             escrow.status = 1; // funded — ready to release to SME
         }
@@ -376,19 +382,13 @@ impl LiquifactEscrow {
             amount,
             funded_amount: escrow.funded_amount,
             status: escrow.status,
+            is_paid: false,
         }
         .publish(&env);
 
         escrow
     }
 
-    pub fn settle(env: Env) -> InvoiceEscrow {
-        let mut escrow = Self::get_escrow(env.clone());
-
-        // check expiry
-        Self::check_and_update_expiry(&env, &mut escrow);
-
-        assert!(escrow.status == 1, "Escrow must be funded");
     /// Mark escrow as settled (buyer paid). Releases principal + yield to investors.
     ///
     /// This is the final step in the escrow lifecycle. It requires that:
@@ -404,7 +404,7 @@ impl LiquifactEscrow {
     /// # Panics
     /// - If the escrow is not in the funded (status = 1) state.
     /// - If the buyer has not confirmed the payment yet.
-    pub fn settle(env: Env) -> InvoiceEscrow {
+    pub fn settle(env: Env, amount: i128) -> InvoiceEscrow {
         let mut escrow = Self::get_escrow(env.clone());
 
         // Auth boundary: only the SME (payee) may settle the escrow.
@@ -414,20 +414,31 @@ impl LiquifactEscrow {
             escrow.status == 1 || escrow.status == 2,
             "Escrow must be funded before settlement"
         );
-        
-        // Final status 2 means already fully settled, but we allow 
+
+        // Final status 2 means already fully settled, but we allow
         // calling this as long as it doesn't exceed total_due
-        
-        let interest = (escrow.amount * (escrow.yield_bps as i128)) / 10000;
-        let total_due = escrow.amount + interest;
-        
-        escrow.settled_amount += amount;
-        
+
+        // Safety: i64 → i128 widening cast is always lossless (i64::MAX < i128::MAX).
+        let interest = escrow
+            .amount
+            .checked_mul(escrow.yield_bps as i128)
+            .expect("Arithmetic overflow: interest calculation")
+            / 10000;
+        let total_due = escrow
+            .amount
+            .checked_add(interest)
+            .expect("Arithmetic overflow: total due calculation");
+
+        escrow.settled_amount = escrow
+            .settled_amount
+            .checked_add(amount)
+            .expect("Arithmetic overflow: settled_amount accumulation");
+
         assert!(
             escrow.settled_amount <= total_due,
             "Settlement amount exceeds total due"
         );
-        
+
         if escrow.settled_amount == total_due {
             escrow.status = 2; // fully settled
         }
@@ -459,7 +470,10 @@ impl LiquifactEscrow {
         escrow.admin.require_auth();
 
         // Validation: preventing post-funding tampering
-        assert!(escrow.status == 0, "Maturity can only be updated in Open state");
+        assert!(
+            escrow.status == 0,
+            "Maturity can only be updated in Open state"
+        );
 
         let old_maturity = escrow.maturity;
         escrow.maturity = new_maturity;
