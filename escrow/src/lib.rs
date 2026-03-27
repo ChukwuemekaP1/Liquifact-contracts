@@ -123,7 +123,7 @@ impl LiquifactEscrow {
         admin.require_auth();
 
         assert!(
-            !env.storage().instance().has(&DataKey::Escrow),
+            !env.storage().instance().has(&ESCROW_KEY),
             "Escrow already initialized"
         );
 
@@ -235,6 +235,7 @@ impl LiquifactEscrow {
             amount,
             funded_amount: escrow.funded_amount,
             status: escrow.status,
+            is_paid: false,
         }
         .publish(&env);
 
