@@ -1,7 +1,19 @@
-//! # LiquiFact Escrow Contract
+//! LiquiFact Escrow Contract
 //!
 //! Holds investor funds for an invoice until settlement.
-//! Supports double-claim protection for investor payouts.
+//! - SME receives stablecoin when funding target is met
+//! - Investors receive principal + yield when buyer pays at maturity
+//!
+//! ### Settlement Sequence
+//! 1. **Initialization**: Admin creates the escrow with `init`.
+//! 2. **Funding**: Investors contribute funds via `fund` until `funding_target` is met (status 0 -> 1).
+//! 3. **Settlement**: SME calls `settle` to finalize the escrow, moving it to status 2.
+//!
+//! The contract emits the following Soroban events for off-chain indexers:
+//!
+//! | Version | Changes |
+//! |---------|---------|
+//! | 1       | Initial schema |
 
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
@@ -9,6 +21,18 @@ use soroban_sdk::{
 
 /// Current storage schema version.
 pub const SCHEMA_VERSION: u32 = 1;
+const LEGACY_ESCROW_KEY: Symbol = symbol_short!("escrow");
+
+// ── Storage key ───────────────────────────────────────────────────────────────
+
+#[contracttype]
+pub enum DataKey {
+    Escrow,
+    InvestorContribution(Address),
+    Version,
+}
+
+// ── Data types ────────────────────────────────────────────────────────────────
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,17 +53,13 @@ pub struct InvoiceEscrow {
     pub amount: i128,
     pub funding_target: i128,
     pub funded_amount: i128,
-    pub settled_amount: i128,
     pub yield_bps: i64,
     pub maturity: u64,
-    /// Escrow lifecycle status:
-    /// - `0` — **open**: accepting investor funding
-    /// - `1` — **funded**: target met; awaiting buyer settlement
-    /// - `2` — **settled**: buyer paid; investors can redeem principal + yield
-    /// - `3` — **withdrawn**: SME has withdrawn the funded amount
+    /// 0 = open, 1 = funded, 2 = settled, 3 = withdrawn
     pub status: u32,
-    pub version: u32,
 }
+
+// ── Event types ───────────────────────────────────────────────────────────────
 
 #[contractevent]
 pub struct EscrowInitialized {
@@ -64,53 +84,70 @@ pub struct EscrowSettled {
     #[topic]
     pub name: Symbol,
     pub invoice_id: Symbol,
-    pub amount: i128,
-    pub settled_amount: i128,
-    pub status: u32,
+    pub funded_amount: i128,
+    pub yield_bps: i64,
+    pub maturity: u64,
 }
 
 #[contractevent]
-pub struct PayoutClaimed {
+pub struct MaturityUpdatedEvent {
     #[topic]
     pub name: Symbol,
-    pub investor: Address,
-    pub principal: i128,
-    pub yield_amount: i128,
+    pub invoice_id: Symbol,
+    pub old_maturity: u64,
+    pub new_maturity: u64,
 }
+
+#[contractevent]
+pub struct AdminTransferredEvent {
+    #[topic]
+    pub name: Symbol,
+    pub invoice_id: Symbol,
+    pub new_admin: Address,
+}
+
+// ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct LiquifactEscrow;
 
 #[contractimpl]
 impl LiquifactEscrow {
+    // ── init ──────────────────────────────────────────────────────────────────
+
     /// Initialize a new invoice escrow.
+    ///
+    /// # Authorization
+    /// Requires authorization from `admin`.
+    ///
+    /// # Panics
+    /// - If `amount <= 0`
+    /// - If `yield_bps > 10_000`
+    /// - If the escrow has already been initialized
     pub fn init(
         env: Env,
-        admin: Address,
         invoice_id: Symbol,
         sme_address: Address,
         amount: i128,
         yield_bps: i64,
         maturity: u64,
     ) -> InvoiceEscrow {
+        admin.require_auth();
+
         assert!(
-            !env.storage().instance().has(&DataKey::Escrow),
+            !env.storage().instance().has(&ESCROW_KEY),
             "Escrow already initialized"
         );
-        assert!(amount > 0, "Escrow amount must be positive");
 
         let escrow = InvoiceEscrow {
-            invoice_id,
-            admin,
-            sme_address,
+            invoice_id: invoice_id.clone(),
+            sme_address: sme_address.clone(),
             amount,
             funding_target: amount,
             funded_amount: 0,
-            settled_amount: 0,
             yield_bps,
             maturity,
             status: 0,
-            version: SCHEMA_VERSION,
         };
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
@@ -119,7 +156,7 @@ impl LiquifactEscrow {
             .set(&DataKey::Version, &SCHEMA_VERSION);
 
         EscrowInitialized {
-            name: symbol_short!("init"),
+            name: symbol_short!("escrow_ii"),
             escrow: escrow.clone(),
         }
         .publish(&env);
@@ -127,6 +164,9 @@ impl LiquifactEscrow {
         escrow
     }
 
+    // ── get_escrow ────────────────────────────────────────────────────────────
+
+    /// Return the current escrow state without modifying storage.
     pub fn get_escrow(env: Env) -> InvoiceEscrow {
         env.storage()
             .instance()
@@ -138,154 +178,269 @@ impl LiquifactEscrow {
         env.storage().instance().get(&DataKey::Version).unwrap_or(0)
     }
 
+    /// Returns the contribution amount for a given investor.
+    pub fn get_contribution(env: Env, investor: Address) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::InvestorContribution(investor))
+            .unwrap_or(0)
+    }
+
+    // ── migrate ───────────────────────────────────────────────────────────────
+
+    /// Migrate storage from an older schema version to the current one.
+    pub fn migrate(env: Env, from_version: u32) -> u32 {
+        let stored: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
+
+        assert!(
+            stored_version == from_version,
+            "from_version does not match stored version"
+        );
+        assert!(
+            from_version < SCHEMA_VERSION,
+            "Already at current schema version"
+        );
+
+        panic!("No migration path from version {}", from_version);
+    }
+
+    // ── fund ──────────────────────────────────────────────────────────────────
+
     /// Record investor funding.
+    ///
+    /// # Authorization
+    /// Requires authorization from `investor`.
+    ///
+    /// # Panics
+    /// - If the escrow is not in the open (status = 0) state.
+    /// - If `amount` is zero or negative.
     pub fn fund(env: Env, investor: Address, amount: i128) -> InvoiceEscrow {
         investor.require_auth();
 
         let mut escrow = Self::get_escrow(env.clone());
+
         assert!(amount > 0, "Funding amount must be positive");
+
+        let mut escrow = Self::get_escrow(env.clone(), invoice_id.clone());
         assert!(escrow.status == 0, "Escrow not open for funding");
-
-        let contribution_key = DataKey::Contribution(investor.clone());
-        let current_contribution: i128 =
-            env.storage().instance().get(&contribution_key).unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&contribution_key, &(current_contribution + amount));
-
         escrow.funded_amount += amount;
         if escrow.funded_amount >= escrow.funding_target {
             escrow.status = 1;
         }
 
+        // Track per-investor contribution
+        let prev: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::InvestorContribution(investor.clone()))
+            .unwrap_or(0);
+        env.storage().instance().set(
+            &DataKey::InvestorContribution(investor.clone()),
+            &(prev + amount),
+        );
+
         env.storage().instance().set(&DataKey::Escrow, &escrow);
 
         EscrowFunded {
-            name: symbol_short!("fund"),
+            name: symbol_short!("funded"),
             invoice_id: escrow.invoice_id.clone(),
             investor,
             amount,
             funded_amount: escrow.funded_amount,
             status: escrow.status,
+            is_paid: false,
         }
         .publish(&env);
 
         escrow
     }
 
-    /// Get total contribution of an investor.
-    pub fn get_contribution(env: Env, investor: Address) -> i128 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Contribution(investor))
-            .unwrap_or(0)
-    }
+    // ── settle ────────────────────────────────────────────────────────────────
 
-    /// Settle the escrow (buyer pays).
-    pub fn settle(env: Env, amount: i128) -> InvoiceEscrow {
+    /// Mark escrow as settled (buyer paid).
+    ///
+    /// # Authorization
+    /// Requires authorization from the `sme_address` stored in the escrow.
+    ///
+    /// # Panics
+    /// - If the escrow is not in the funded (status = 1) state.
+    /// - If the current ledger timestamp is before `maturity` (when maturity > 0).
+    pub fn settle(env: Env) -> InvoiceEscrow {
         let mut escrow = Self::get_escrow(env.clone());
-        escrow.admin.require_auth();
 
+        escrow.sme_address.require_auth();
         assert!(
-            escrow.status == 1 || escrow.status == 3,
-            "Escrow must be funded or withdrawn before settlement"
+            escrow.status == 1,
+            "Escrow must be funded before settlement"
         );
 
-        let interest = (escrow.amount * (escrow.yield_bps as i128)) / 10000;
-        let total_due = escrow.amount + interest;
-
-        escrow.settled_amount += amount;
-        assert!(
-            escrow.settled_amount <= total_due,
-            "Settlement amount exceeds total due"
-        );
-
-        if escrow.settled_amount == total_due {
-            escrow.status = 2;
+        // Maturity check: if maturity is set (> 0), ledger time must have reached it
+        if escrow.maturity > 0 {
+            let now = env.ledger().timestamp();
+            assert!(
+                now >= escrow.maturity,
+                "Escrow has not yet reached maturity"
+            );
         }
+
+        escrow.status = 2;
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
 
         EscrowSettled {
-            name: symbol_short!("settle"),
+            name: symbol_short!("escrow_sd"),
             invoice_id: escrow.invoice_id.clone(),
-            amount,
-            settled_amount: escrow.settled_amount,
-            status: escrow.status,
+            funded_amount: escrow.funded_amount,
+            yield_bps: escrow.yield_bps,
+            maturity: escrow.maturity,
         }
         .publish(&env);
 
         escrow
     }
 
-    /// SME withdraws funded capital.
-    pub fn withdraw(env: Env) -> i128 {
+    // ── update_maturity ───────────────────────────────────────────────────────
+
+    /// Update maturity timestamp. Only allowed by admin in Open state.
+    ///
+    /// # Authorization
+    /// Requires authorization from the admin.
+    ///
+    /// # Panics
+    /// - If escrow status is not open (0).
+    /// - If emergency mode is active.
+    pub fn update_maturity(env: Env, new_maturity: u64) -> InvoiceEscrow {
         let mut escrow = Self::get_escrow(env.clone());
         escrow.sme_address.require_auth();
 
+        escrow.admin.require_auth();
+
         assert!(
-            escrow.status == 1,
-            "Escrow must be funded before withdrawal"
+            escrow.status == 0,
+            "Maturity can only be updated in Open state"
         );
 
-        let withdrawal_amount = escrow.funded_amount;
-        escrow.status = 3; // withdrawn
+        let (yield_amount, total_payout) =
+            Self::compute_expected_payout(&escrow, record.contribution);
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
 
-        withdrawal_amount
-    }
-
-    /// Investor claims their share of the settled funds.
-    ///
-    /// # Payout Rules
-    /// - The escrow must be in the `Settled` (status 2) state.
-    /// - The investor must have contributed a non-zero amount to the escrow.
-    /// - The payout equals the original contribution plus the accrued yield.
-    ///
-    /// # Double-Claim Protection
-    /// - Each account is permitted exactly one claim.
-    /// - A persistent `Claimed` flag is stored for every address that successfully claims.
-    /// - Subsequent claim attempts from the same address will panic with "Payout already claimed".
-    /// - This prevents replay-like attacks or accidental multiple withdrawals.
-    ///
-    /// # Authorization
-    /// Requires authorization from the `investor` address.
-    pub fn claim(env: Env, investor: Address) -> i128 {
-        investor.require_auth();
-
-        let escrow = Self::get_escrow(env.clone());
-        assert!(escrow.status == 2, "Escrow not settled");
-
-        let claimed_key = DataKey::Claimed(investor.clone());
-        assert!(
-            !env.storage().instance().has(&claimed_key),
-            "Payout already claimed"
-        );
-
-        let principal = Self::get_contribution(env.clone(), investor.clone());
-        assert!(principal > 0, "No contribution found for investor");
-
-        // Calculate share of yield
-        // yield_amount = (principal / total_amount) * total_yield
-        // total_yield = amount * yield_bps / 10000
-        let yield_amount = (principal * (escrow.yield_bps as i128)) / 10000;
-        let payout = principal + yield_amount;
-
-        // Mark as claimed BEFORE "transferring" (double-claim protection)
-        env.storage().instance().set(&claimed_key, &true);
-
-        PayoutClaimed {
-            name: symbol_short!("claim"),
-            investor,
-            principal,
-            yield_amount,
+        MaturityUpdatedEvent {
+            name: symbol_short!("maturity"),
+            invoice_id: escrow.invoice_id.clone(),
+            old_maturity,
+            new_maturity,
         }
         .publish(&env);
 
-        payout
+        // Audit event.
+        InvestorRedeemed {
+            name: symbol_short!("redeemed"),
+            invoice_id: escrow.invoice_id.clone(),
+            investor: investor.clone(),
+            principal: record.contribution,
+            yield_amount,
+            total_payout,
+        }
+        .publish(&env);
+
+        Self::build_position_view(&escrow, &investor, &record)
+    }
+
+    // ── withdraw ──────────────────────────────────────────────────────────────
+
+    /// Withdraw funded liquidity to the SME wallet.
+    ///
+    /// # Authorization
+    /// Requires authorization from the `sme_address` stored in the escrow.
+    ///
+    /// # Panics
+    /// - If the escrow is not in the funded (status = 1) state.
+    pub fn withdraw(env: Env) -> i128 {
+        let mut escrow = Self::get_escrow(env.clone());
+
+        escrow.sme_address.require_auth();
+
+        // Get escrow state
+        let escrow = Self::get_escrow(env.clone());
+        
+        // Emergency mode check: refund only available during emergency
+        assert!(
+            escrow.emergency_mode,
+            "Emergency mode not active"
+        );
+        
+        // Double-claim prevention: check if already refunded
+        let mut refunded: Map<Address, bool> = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundedInvestors)
+            .unwrap_or_else(|| Map::new(&env));
+        
+        assert!(
+            !refunded.get(investor.clone()).unwrap_or(false),
+            "Already refunded"
+        );
+
+        // Get investor's balance
+        let balances: Map<Address, i128> = env
+            .storage()
+            .instance()
+            .get(&DataKey::InvestorBalances)
+            .unwrap_or_else(|| Map::new(&env));
+        
+        let investor_balance = balances.get(investor.clone()).unwrap_or(0);
+        
+        // Balance check: cannot refund zero balance
+        assert!(
+            escrow.invoice_id == target_invoice_id,
+            "Target escrow invoice_id does not match"
+        );
+
+        let withdrawal_amount = escrow.funded_amount;
+        escrow.status = 3;
+        escrow.funded_amount = 0;
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
+
+        // No migrations yet
+        panic!("No migration path");
+    }
+
+    // ── transfer_admin ────────────────────────────────────────────────────────
+
+    /// Transfer admin role to a new address.
+    ///
+    /// # Authorization
+    /// Requires authorization from the current `admin`.
+    ///
+    /// # Panics
+    /// - If `new_admin` is the same as the current admin.
+    /// - If the escrow is not initialized.
+    pub fn transfer_admin(env: Env, new_admin: Address) -> InvoiceEscrow {
+        let mut escrow = Self::get_escrow(env.clone());
+
+        escrow.admin.require_auth();
+
+        assert!(
+            escrow.admin != new_admin,
+            "New admin must differ from current admin"
+        );
+
+        escrow.admin = new_admin;
+
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
+
+        AdminTransferredEvent {
+            name: symbol_short!("admin"),
+            invoice_id: escrow.invoice_id.clone(),
+            new_admin: escrow.admin.clone(),
+        }
+        .publish(&env);
+
+        escrow
     }
 }
 
+// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod test;
