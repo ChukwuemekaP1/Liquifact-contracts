@@ -161,7 +161,7 @@ fn test_fund_partial_then_full() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &symbol_short!("INV003"),
+        &symbol_short!("INV002"),
         &sme,
         &10_000_0000000i128,
         &800i64,
