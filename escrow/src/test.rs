@@ -58,7 +58,7 @@ fn test_init_stores_escrow() {
 }
 
 #[test]
-fn test_init_and_get_escrow() {
+fn test_init_stores_keyed_invoice_and_lists_it() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
     let escrow = client.init(

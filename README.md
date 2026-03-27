@@ -137,8 +137,11 @@ State-changing methods enforce Stellar auth using `require_auth()`:
 
 Read-only methods (including `get_investor_position`) do not require auth, and return only public accounting data (amounts, escrow status, and claim flags).
 
----
+- Legacy singleton value exists under key `"escrow"`
+- Legacy `invoice_id` must match the provided `invoice_id`
+- Target keyed invoice must not already exist
 
+## Contract lifecycle
 
 ## Funding Constraints
 - **Minimum Funding:** All funding amounts must be strictly greater than zero ($> 0$). 
@@ -146,15 +149,20 @@ Read-only methods (including `get_investor_position`) do not require auth, and r
 - **Integer Safety:** Uses `checked_add` to prevent overflow during funded amount accounting.
 - **Governance Controls (Target Update):** The funding target size (`amount`) can be modified by the initialized `admin`. It enforces strict governance constraints: it can only be modified when the escrow is `Open` (status = 0), the new target must be strictly positive, and it can never be less than the existing `funded_amount`.
 
----
+- `0` open
+- `1` funded
+- `2` settled
 
-## Security Assumptions
+Main methods:
 
-- Soroban runtime guarantees:
-- Deterministic execution
-- Storage integrity
-- Token transfers handled externally
-- Off-chain systems validate invoice authenticity
+- `init`
+- `get_escrow`
+- `list_invoices`
+- `fund`
+- `settle`
+- `update_maturity`
+- `transfer_admin`
+- `migrate_singleton`
 
 ---
 

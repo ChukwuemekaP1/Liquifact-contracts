@@ -21,6 +21,7 @@ use soroban_sdk::{
 
 /// Current storage schema version.
 pub const SCHEMA_VERSION: u32 = 1;
+const LEGACY_ESCROW_KEY: Symbol = symbol_short!("escrow");
 
 // ── Storage key ───────────────────────────────────────────────────────────────
 
@@ -164,7 +165,6 @@ impl LiquifactEscrow {
             .unwrap_or_else(|| panic!("Escrow not initialized"))
     }
 
-    /// Returns the stored schema version.
     pub fn get_version(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Version).unwrap_or(0)
     }
@@ -211,6 +211,8 @@ impl LiquifactEscrow {
         let mut escrow = Self::get_escrow(env.clone());
 
         assert!(amount > 0, "Funding amount must be positive");
+
+        let mut escrow = Self::get_escrow(env.clone(), invoice_id.clone());
         assert!(escrow.status == 0, "Escrow not open for funding");
         escrow.funded_amount += amount;
         if escrow.funded_amount >= escrow.funding_target {
