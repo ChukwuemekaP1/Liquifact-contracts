@@ -138,6 +138,13 @@ rustup component add llvm-tools-preview
 - **Collateral record:** is not proof of encumbrance until a future version explicitly enforces token transfers.
 - **Overflow:** `fund` uses `checked_add` on `funded_amount`.
 
+### Contract type clone/derive safety
+
+- `DataKey` keeps `Clone` because key wrappers are reused for storage get/set paths.
+- `InvoiceEscrow` and `SmeCollateralCommitment` intentionally do **not** derive `Clone`; this prevents accidental full-state duplication in hot paths.
+- `InvoiceEscrow` and `SmeCollateralCommitment` derive `PartialEq` for deterministic state assertions in tests and `Debug` for failure diagnostics.
+- `init` publishes `EscrowInitialized` from stored state instead of cloning the in-memory escrow snapshot, reducing avoidable copy overhead.
+
 ---
 
 ## Contributing

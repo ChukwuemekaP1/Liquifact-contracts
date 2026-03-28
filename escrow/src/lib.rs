@@ -27,6 +27,11 @@ pub const SCHEMA_VERSION: u32 = 2;
 
 #[contracttype]
 #[derive(Clone)]
+/// Storage discriminator for all persisted values.
+///
+/// Derive rationale:
+/// - `Clone`: required because keys are passed by reference into storage APIs and reused
+///   across lookups/sets in the same execution path.
 pub enum DataKey {
     Escrow,
     Version,
@@ -44,7 +49,14 @@ pub enum DataKey {
 
 /// Full state of an invoice escrow persisted in contract storage (`DataKey::Escrow`).
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, PartialEq)]
+/// Full escrow snapshot persisted at [`DataKey::Escrow`].
+///
+/// Derive rationale:
+/// - `Debug`: improves failure diagnostics in tests.
+/// - `PartialEq`: allows exact state assertions in tests.
+///
+/// `Clone` is intentionally omitted to avoid accidental full-state copies.
 pub struct InvoiceEscrow {
     pub invoice_id: Symbol,
     pub admin: Address,
@@ -65,7 +77,14 @@ pub struct InvoiceEscrow {
 /// optionally enforce transfers, but that would be explicit in the API and must not reuse
 /// this record as proof of locked assets without on-chain enforcement changes.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, PartialEq)]
+/// SME collateral pledge metadata (record-only).
+///
+/// Derive rationale:
+/// - `Debug`: improves failure diagnostics in tests.
+/// - `PartialEq`: allows deterministic assertion of stored/read values.
+///
+/// `Clone` is intentionally omitted to avoid accidental large-value duplication.
 pub struct SmeCollateralCommitment {
     pub asset: Symbol,
     pub amount: i128,
@@ -191,7 +210,7 @@ impl LiquifactEscrow {
 
         assert!(amount > 0, "Amount must be positive");
         assert!(
-            yield_bps >= 0 && yield_bps <= 10_000,
+            (0..=10_000).contains(&yield_bps),
             "yield_bps must be between 0 and 10_000"
         );
         assert!(
@@ -218,7 +237,8 @@ impl LiquifactEscrow {
 
         EscrowInitialized {
             name: symbol_short!("escrow_ii"),
-            escrow: escrow.clone(),
+            // Read the stored value so we do not clone an in-memory escrow snapshot.
+            escrow: Self::get_escrow(env.clone()),
         }
         .publish(&env);
 
@@ -272,7 +292,7 @@ impl LiquifactEscrow {
         escrow.sme_address.require_auth();
 
         let commitment = SmeCollateralCommitment {
-            asset: asset.clone(),
+            asset,
             amount,
             recorded_at: env.ledger().timestamp(),
         };
@@ -387,15 +407,11 @@ impl LiquifactEscrow {
             escrow.status = 1;
         }
 
-        let prev: i128 = env
-            .storage()
+        let contribution_key = DataKey::InvestorContribution(investor.clone());
+        let prev: i128 = env.storage().instance().get(&contribution_key).unwrap_or(0);
+        env.storage()
             .instance()
-            .get(&DataKey::InvestorContribution(investor.clone()))
-            .unwrap_or(0);
-        env.storage().instance().set(
-            &DataKey::InvestorContribution(investor.clone()),
-            &(prev + amount),
-        );
+            .set(&contribution_key, &(prev + amount));
 
         env.storage().instance().set(&DataKey::Escrow, &escrow);
 
