@@ -156,6 +156,32 @@ Store the digest in release notes and inject the same WASM into verification too
 | Test | `cargo test` |
 | Coverage (≥ 95% lines in CI) | `cargo llvm-cov --features testutils --fail-under-lines 95 --summary-only` |
 
+### Randomized funding sequence invariants
+
+`escrow/src/test.rs` includes high-variance funding sequence tests that randomize:
+
+- Actor count (single investor to many investors).
+- Contribution amount distribution (tiny + large contributions in one sequence).
+- Sequence length and actor ordering.
+
+Validated invariants include:
+
+- `funded_amount` is monotonic.
+- `status` does not regress and flips to funded exactly at `funded_amount >= funding_target`.
+- Sum of `get_contribution(investor)` over all participating actors equals `funded_amount`.
+
+Reproducibility guidance:
+
+```bash
+# Stable CI runtime and deterministic case volume
+PROPTEST_CASES=256 cargo test prop_randomized_funding_sequences_preserve_invariants -- --nocapture
+
+# Replay a known failing seed from CI/local output
+PROPTEST_CASES=256 PROPTEST_SEED=<seed> cargo test prop_randomized_funding_sequences_preserve_invariants -- --nocapture
+```
+
+Use the emitted failing seed in bug reports so invariant breaks are exactly replayable.
+
 Install coverage tools:
 
 ```bash

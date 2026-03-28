@@ -1936,6 +1936,65 @@ fn test_ledger_sequence_recorded_in_snapshot_with_tick() {
 
 use proptest::prelude::*;
 
+#[test]
+fn test_high_variance_funding_sequence_invariants() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+    let target = 10_000_0000000i128;
+    client.init(
+        &admin,
+        &String::from_str(&env, "HVSEQ01"),
+        &sme,
+        &target,
+        &800i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+    );
+
+    let investors = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    let sequence = [
+        (0usize, 1i128),
+        (1usize, 3_500_0000000i128),
+        (2usize, 50i128),
+        (3usize, 2_000_0000000i128),
+        (4usize, 5i128),
+        (5usize, 4_500_0000000i128),
+    ];
+
+    let mut observed_sum = 0i128;
+    let mut prev_funded = client.get_escrow().funded_amount;
+
+    for (idx, amount) in sequence {
+        if client.get_escrow().status != 0 {
+            break;
+        }
+        client.fund(&investors[idx], &amount);
+        observed_sum += amount;
+
+        let escrow = client.get_escrow();
+        assert!(escrow.funded_amount >= prev_funded);
+        assert_eq!(escrow.funded_amount, observed_sum);
+        assert_eq!(escrow.status, if escrow.funded_amount >= target { 1 } else { 0 });
+        prev_funded = escrow.funded_amount;
+    }
+}
+
+// Reproducibility note:
+// - Keep a fixed PROPTEST_CASES value in CI for stable runtime.
+// - When a failure occurs, replay locally with PROPTEST_SEED=<seed> and the failing test name.
 proptest! {
     #[test]
     fn prop_funded_amount_non_decreasing(
@@ -2012,6 +2071,71 @@ proptest! {
             prop_assert_eq!(after_settle.status, 2);
         } else {
             prop_assert_eq!(after_fund.status, 0);
+        }
+    }
+
+    #[test]
+    fn prop_randomized_funding_sequences_preserve_invariants(
+        actor_count in 1usize..9,
+        target in 1i128..20_000_0000000i128,
+        steps in proptest::collection::vec((0usize..32, 1i128..3_000_0000000i128), 1..120),
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let sme = Address::generate(&env);
+        let client = deploy(&env);
+
+        let escrow = client.init(
+            &admin,
+            &String::from_str(&env, "RNDSEQ1"),
+            &sme,
+            &target,
+            &800i64,
+            &0u64,
+            &Address::generate(&env),
+            &None,
+            &Address::generate(&env),
+            &None,
+        );
+        prop_assert_eq!(escrow.status, 0);
+        prop_assert_eq!(escrow.funded_amount, 0);
+
+        let investors: std::vec::Vec<Address> =
+            (0..actor_count).map(|_| Address::generate(&env)).collect();
+        let mut modeled_contributions = vec![0i128; actor_count];
+        let mut modeled_total = 0i128;
+        let mut prev_status = 0u32;
+        let mut prev_funded = 0i128;
+
+        for (raw_actor_idx, amount) in steps {
+            let escrow_before = client.get_escrow();
+            prop_assert!(escrow_before.status <= 1);
+            prop_assert!(escrow_before.funded_amount >= prev_funded);
+            prop_assert!(escrow_before.status >= prev_status);
+            prev_status = escrow_before.status;
+            prev_funded = escrow_before.funded_amount;
+
+            if escrow_before.status != 0 {
+                break;
+            }
+
+            let actor_idx = raw_actor_idx % actor_count;
+            client.fund(&investors[actor_idx], &amount);
+            modeled_contributions[actor_idx] += amount;
+            modeled_total += amount;
+
+            let escrow_after = client.get_escrow();
+            prop_assert!(escrow_after.funded_amount >= escrow_before.funded_amount);
+            prop_assert_eq!(escrow_after.funded_amount, modeled_total);
+            prop_assert_eq!(escrow_after.status, if modeled_total >= target { 1 } else { 0 });
+
+            let summed_per_investor: i128 = investors
+                .iter()
+                .map(|addr| client.get_contribution(addr))
+                .sum();
+            prop_assert_eq!(summed_per_investor, escrow_after.funded_amount);
+            prop_assert_eq!(client.get_contribution(&investors[actor_idx]), modeled_contributions[actor_idx]);
         }
     }
 }
