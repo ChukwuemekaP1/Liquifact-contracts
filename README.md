@@ -1,22 +1,42 @@
-# LiquiFact Contracts
+# LiquiFact Escrow Contract
 
 Soroban smart contracts for LiquiFact, the invoice liquidity network on Stellar. This repository currently contains the `escrow` contract that holds investor funds for tokenized invoices until settlement.
 
-## Prerequisites
+### Per-instance funding asset and registry (issues #113, #116)
 
 - Rust 1.70+ (stable)
 - Soroban CLI (optional for deployment)
 
 For local development and CI, Rust is enough.
 
-## Setup
+### Treasury dust sweep (issue #107)
 
 ```bash
 cargo build
 cargo test
 ```
 
-## Development
+## Storage-only upgrade policy (additive fields)
+
+**Compatible without redeploy** when you only:
+
+- Add **new** `DataKey` variants and/or new `#[contracttype]` structs stored under **new** keys.
+- Read new keys with `.get(...).unwrap_or(default)` so missing keys behave as “unset” on old deployments.
+
+**Requires new deployment or explicit migration** when you:
+
+- Change layout or meaning of an existing stored type (e.g. new required field on `InvoiceEscrow` without a migration that rewrites `DataKey::Escrow`).
+- Rename or change the XDR shape of an existing `DataKey` variant used in production.
+
+**Compatibility test plan (short):**
+
+1. Deploy version _N_; exercise `init`, `fund`, `settle`.
+2. Deploy version _N+1_ with only new optional keys; repeat flows; assert old instances still readable.
+3. If `InvoiceEscrow` changes, add a migration test or document mandatory redeploy.
+
+`migrate` today validates `from_version` against stored `DataKey::Version` and errors if no path is implemented.
+
+### `DataKey` naming convention
 
 | Command | Description |
 |---|---|
@@ -25,7 +45,7 @@ cargo test
 | `cargo fmt` | Format code |
 | `cargo fmt -- --check` | Check formatting |
 
-## Project structure
+## Release runbook: build, deploy, verify
 
 ```text
 liquifact-contracts/
@@ -82,6 +102,6 @@ cargo build
 cargo test
 ```
 
-## License
+## Contributing
 
 MIT
