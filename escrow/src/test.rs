@@ -158,6 +158,15 @@ fn test_double_init_panics() {
 }
 
 #[test]
+fn test_init_sets_initialized_flag() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    // If it didn't set it, get_escrow would panic
+    client.get_escrow();
+}
+
+#[test]
 #[should_panic(expected = "Escrow not initialized")]
 fn test_get_escrow_uninitialized_panics() {
     let env = Env::default();

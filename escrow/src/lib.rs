@@ -96,6 +96,7 @@ pub const MAX_INVOICE_ID_STRING_LEN: u32 = 32;
 /// - `Clone`: required because keys are passed by reference into storage APIs and reused
 ///   across lookups/sets in the same execution path.
 pub enum DataKey {
+    Initialized,
     Escrow,
     Version,
     /// Per-investor contributed principal recorded during [`LiquifactEscrow::fund`].
@@ -420,12 +421,15 @@ impl LiquifactEscrow {
     /// The funding token and treasury addresses are **immutable** after this call; the registry id is
     /// optional metadata for off-chain indexers (not an on-chain authority).
     ///
+    /// This function implements a **one-time initialization guard**; once [`DataKey::Initialized`] is
+    /// set, any subsequent call to `init` will panic.
+    ///
     /// `invoice_id` must satisfy [`MAX_INVOICE_ID_STRING_LEN`] and charset rules (see
     /// [`validate_invoice_id_string`]).
     ///
     /// # Panics
     /// If `amount` or implied target is not positive, `yield_bps > 10_000`, invoice id invalid,
-    /// or escrow exists.
+    /// or escrow already initialized.
     pub fn init(
         env: Env,
         admin: Address,
@@ -449,9 +453,11 @@ impl LiquifactEscrow {
             "yield_bps must be between 0 and 10_000"
         );
         assert!(
-            !env.storage().instance().has(&DataKey::Escrow),
+            !env.storage().instance().has(&DataKey::Initialized),
             "Escrow already initialized"
         );
+
+        env.storage().instance().set(&DataKey::Initialized, &true);
 
         Self::validate_yield_tiers_table(&yield_tiers, yield_bps);
 
@@ -617,10 +623,13 @@ impl LiquifactEscrow {
     }
 
     pub fn get_escrow(env: Env) -> InvoiceEscrow {
+        if !env.storage().instance().has(&DataKey::Initialized) {
+            panic!("Escrow not initialized");
+        }
         env.storage()
             .instance()
             .get(&DataKey::Escrow)
-            .unwrap_or_else(|| panic!("Escrow not initialized"))
+            .unwrap()
     }
 
     pub fn get_version(env: Env) -> u32 {
