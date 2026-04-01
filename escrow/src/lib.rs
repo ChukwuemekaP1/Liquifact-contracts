@@ -131,7 +131,7 @@ pub enum DataKey {
     InvestorClaimNotBefore(Address),
     /// Minimum [`LiquifactEscrow::fund`] / [`LiquifactEscrow::fund_with_commitment`] amount per call (0 = no floor).
     MinContributionFloor,
-    /// When set at [`LiquifactEscrow::init`], caps distinct investor addresses that may contribute (`prev == 0`).
+/// When set at [`LiquifactEscrow::init`], caps distinct investor addresses that may contribute (`prev == 0`).
     MaxUniqueInvestorsCap,
     /// Count of distinct investor addresses that have a non-zero [`DataKey::InvestorContribution`].
     UniqueFunderCount,
@@ -141,6 +141,10 @@ pub enum DataKey {
     /// Append-only audit chain of digests (bounded by [`MAX_ATTESTATION_APPEND_ENTRIES`]).
     /// See [`LiquifactEscrow::append_attestation_digest`].
     AttestationAppendLog,
+    /// Proposed new SME address with timelock metadata (set by admin, accepted by new SME).
+    BeneficiaryProposal,
+    /// Current active SME address (may differ from proposal during timelock period).
+    CurrentSmeAddress,
 }
 
 // --- Data types ---
@@ -270,6 +274,35 @@ pub struct AttestationDigestAppended {
     pub invoice_id: Symbol,
     pub index: u32,
     pub digest: BytesN<32>,
+}
+
+/// Beneficiary rotation events
+
+#[contractevent]
+pub struct BeneficiaryProposed {
+    #[topic]
+    pub name: Symbol,
+    pub invoice_id: Symbol,
+    pub proposed_address: Address,
+    pub proposed_at: u64,
+    pub timelock_duration_secs: u64,
+}
+
+#[contractevent]
+pub struct BeneficiaryAccepted {
+    #[topic]
+    pub name: Symbol,
+    pub invoice_id: Symbol,
+    pub new_sme_address: Address,
+    pub accepted_at: u64,
+}
+
+#[contractevent]
+pub struct BeneficiaryCancelled {
+    #[topic]
+    pub name: Symbol,
+    pub invoice_id: Symbol,
+    pub cancelled_at: u64,
 }
 
 #[contract]
@@ -696,8 +729,9 @@ impl LiquifactEscrow {
         );
 
         let mut escrow = Self::get_escrow(env.clone());
-
-        escrow.sme_address.require_auth();
+        let current_sme = Self::get_current_sme_address(env.clone());
+        
+        current_sme.require_auth();
         assert!(
             escrow.status == 1,
             "Escrow must be funded before settlement"
@@ -735,7 +769,9 @@ impl LiquifactEscrow {
         );
 
         let mut escrow = Self::get_escrow(env.clone());
-        escrow.sme_address.require_auth();
+        let current_sme = Self::get_current_sme_address(env.clone());
+        
+        current_sme.require_auth();
 
         assert!(
             escrow.status == 1,
