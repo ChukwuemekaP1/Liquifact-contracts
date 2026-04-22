@@ -44,7 +44,7 @@ pub fn transfer_funding_token_with_balance_checks(
         "insufficient token balance before transfer"
     );
 
-    token.transfer(from, &MuxedAddress::from(treasury.clone()), &amount);
+    token.transfer(from, MuxedAddress::from(treasury.clone()), &amount);
 
     let from_after = token.balance(from);
     let treasury_after = token.balance(treasury);

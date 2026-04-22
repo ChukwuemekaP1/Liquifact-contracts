@@ -1,8 +1,17 @@
 # Build
 target/
 
+# Local command outputs (generated)
+build_output*.txt
+test_output*.txt
+
+# Local notes / PR scratch files
+PR_DESCRIPTION.md
+TODO.md
+
 # Test snapshots (generated)
 **/test_snapshots/
+
 node_modules/
 
 # IDE
