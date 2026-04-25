@@ -632,3 +632,183 @@ fn test_ledger_sequence_recorded_in_snapshot_with_tick() {
     let snap = client.get_funding_close_snapshot().unwrap();
     assert_eq!(snap.closed_at_ledger_sequence, seq);
 }
+
+// --- min_contribution_floor funding regression tests ---
+
+/// Helper: init with a floor and return (client, investor).
+fn init_with_floor(
+    env: &Env,
+    invoice_id: &str,
+    target: i128,
+    floor: i128,
+) -> (LiquifactEscrowClient<'_>, Address) {
+    let client = deploy(env);
+    let admin = Address::generate(env);
+    let sme = Address::generate(env);
+    let (tok, tre) = free_addresses(env);
+    client.init(
+        &admin,
+        &String::from_str(env, invoice_id),
+        &sme,
+        &target,
+        &500i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &Some(floor),
+        &None,
+    );
+    let investor = Address::generate(env);
+    (client, investor)
+}
+
+/// `get_min_contribution_floor` returns the configured floor.
+#[test]
+fn test_get_min_contribution_floor_returns_configured_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _) = init_with_floor(&env, "FL001", 10_000i128, 500i128);
+    assert_eq!(client.get_min_contribution_floor(), 500i128);
+}
+
+/// Funding exactly at the floor succeeds.
+#[test]
+fn test_fund_at_floor_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, investor) = init_with_floor(&env, "FL002", 10_000i128, 500i128);
+    let escrow = client.fund(&investor, &500i128);
+    assert_eq!(client.get_contribution(&investor), 500i128);
+    assert_eq!(escrow.funded_amount, 500i128);
+}
+
+/// Funding one unit below the floor panics.
+#[test]
+#[should_panic(expected = "funding amount below min_contribution floor")]
+fn test_fund_below_floor_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, investor) = init_with_floor(&env, "FL003", 10_000i128, 500i128);
+    client.fund(&investor, &499i128);
+}
+
+/// Funding one unit above the floor succeeds.
+#[test]
+fn test_fund_one_above_floor_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, investor) = init_with_floor(&env, "FL004", 10_000i128, 500i128);
+    client.fund(&investor, &501i128);
+    assert_eq!(client.get_contribution(&investor), 501i128);
+}
+
+/// The floor applies to every call, not just the first deposit.
+/// A follow-on deposit below the floor from the same investor must panic.
+#[test]
+#[should_panic(expected = "funding amount below min_contribution floor")]
+fn test_fund_follow_on_below_floor_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, investor) = init_with_floor(&env, "FL005", 10_000i128, 500i128);
+    client.fund(&investor, &500i128); // first deposit — OK
+    client.fund(&investor, &499i128); // follow-on below floor — must panic
+}
+
+/// A follow-on deposit at the floor from the same investor succeeds and accumulates.
+#[test]
+fn test_fund_follow_on_at_floor_accumulates() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, investor) = init_with_floor(&env, "FL006", 10_000i128, 500i128);
+    client.fund(&investor, &500i128);
+    client.fund(&investor, &500i128);
+    assert_eq!(client.get_contribution(&investor), 1_000i128);
+}
+
+/// When no floor is configured (None), any positive amount is accepted.
+#[test]
+fn test_fund_no_floor_accepts_one_unit() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    default_init(&client, &env, &admin, &sme);
+    client.fund(&investor, &1i128);
+    assert_eq!(client.get_contribution(&investor), 1i128);
+}
+
+/// Over-funding past the target with a floor: the single call that crosses the target
+/// must still meet the floor, and the snapshot captures the over-funded total.
+#[test]
+fn test_fund_overshoot_with_floor_records_snapshot() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let target = 5_000i128;
+    let floor = 1_000i128;
+    let (client, investor) = init_with_floor(&env, "FL007", target, floor);
+    // Single call: above floor, above target → funded immediately
+    let escrow = client.fund(&investor, &6_000i128);
+    assert_eq!(escrow.status, 1);
+    assert_eq!(escrow.funded_amount, 6_000i128);
+    let snap = client.get_funding_close_snapshot().unwrap();
+    assert_eq!(snap.total_principal, 6_000i128);
+    assert_eq!(snap.funding_target, target);
+}
+
+/// Two investors each contributing exactly the floor reach the target together;
+/// contributions sum to funded_amount and snapshot is correct.
+#[test]
+fn test_fund_two_investors_at_floor_reach_target() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let target = 2_000i128;
+    let floor = 1_000i128;
+    let (client, inv_a) = init_with_floor(&env, "FL008", target, floor);
+    let inv_b = Address::generate(&env);
+    client.fund(&inv_a, &floor);
+    let escrow = client.fund(&inv_b, &floor);
+    assert_eq!(escrow.status, 1);
+    assert_eq!(escrow.funded_amount, target);
+    assert_eq!(
+        client.get_contribution(&inv_a) + client.get_contribution(&inv_b),
+        target
+    );
+    let snap = client.get_funding_close_snapshot().unwrap();
+    assert_eq!(snap.total_principal, target);
+}
+
+/// `fund_with_commitment` also enforces the floor on the first deposit.
+#[test]
+#[should_panic(expected = "funding amount below min_contribution floor")]
+fn test_fund_with_commitment_below_floor_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, investor) = init_with_floor(&env, "FL009", 10_000i128, 500i128);
+    client.fund_with_commitment(&investor, &499i128, &0u64);
+}
+
+/// `fund_with_commitment` at the floor succeeds and records the contribution.
+#[test]
+fn test_fund_with_commitment_at_floor_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, investor) = init_with_floor(&env, "FL010", 10_000i128, 500i128);
+    client.fund_with_commitment(&investor, &500i128, &0u64);
+    assert_eq!(client.get_contribution(&investor), 500i128);
+}
+
+/// Floor equal to the target: a single call at the floor funds the escrow exactly.
+#[test]
+fn test_fund_floor_equals_target_exact_fill() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amount = 1_000i128;
+    let (client, investor) = init_with_floor(&env, "FL011", amount, amount);
+    let escrow = client.fund(&investor, &amount);
+    assert_eq!(escrow.status, 1);
+    assert_eq!(escrow.funded_amount, amount);
+    let snap = client.get_funding_close_snapshot().unwrap();
+    assert_eq!(snap.total_principal, amount);
+    assert_eq!(snap.funding_target, amount);
+}
