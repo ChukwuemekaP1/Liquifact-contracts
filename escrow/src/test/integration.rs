@@ -1,5 +1,6 @@
 use super::super::external_calls::transfer_funding_token_with_balance_checks;
 use super::*;
+use crate::LegalHoldChanged;
 use soroban_sdk::{contract, contractimpl};
 
 // External-call and token-integration assumptions that should stay separate
@@ -21,6 +22,151 @@ impl MockToken {
     pub fn decimals(_env: Env) -> i32 {
         6
     }
+}
+
+/// **MID-FLOW LEGAL HOLD INTEGRATION TEST (USER-EXPERIENCE NARRATIVE)**
+///
+/// What a user sees:
+/// 1. Investors can fund normally while hold is off.
+/// 2. Admin enables legal hold mid-flow; funding and release actions are blocked immediately.
+/// 3. Admin clears hold; users can resume and complete the flow.
+/// 4. Admin can re-enable hold later, and users again see blocked actions until hold is cleared.
+///
+/// This test validates the block/resume behavior at multiple lifecycle points and verifies
+/// `LegalHoldChanged` event ordering for on-chain watchers.
+#[test]
+fn test_legal_hold_midflow_blocks_and_resumes_with_ordered_events() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::Event;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let contract_id = client.address.clone();
+    let (funding_token, treasury) = free_addresses(&env);
+
+    let investor_a = Address::generate(&env);
+    let investor_b = Address::generate(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "LHM001"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Funding starts normally.
+    let first_leg = TARGET / 2;
+    client.fund(&investor_a, &first_leg);
+
+    // Hold on: new funding is blocked.
+    client.set_legal_hold(&true);
+    let blocked_fund = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.fund(&investor_b, &(TARGET - first_leg));
+    }));
+    assert!(
+        blocked_fund.is_err(),
+        "funding must be blocked while legal hold is active"
+    );
+
+    // Hold off: funding resumes and reaches funded state.
+    client.clear_legal_hold();
+    let escrow = client.fund(&investor_b, &(TARGET - first_leg));
+    assert_eq!(escrow.status, 1, "escrow should reach funded after hold clears");
+
+    // Hold on again: release/settlement action is blocked.
+    client.set_legal_hold(&true);
+    let blocked_settle = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.settle();
+    }));
+    assert!(
+        blocked_settle.is_err(),
+        "settlement must be blocked while legal hold is active"
+    );
+
+    // Hold off again: settle succeeds and investors can continue.
+    client.clear_legal_hold();
+    let settled = client.settle();
+    assert_eq!(settled.status, 2, "escrow should settle after hold clears");
+
+    // Hold on at claim stage: investor claim blocked.
+    client.set_legal_hold(&true);
+    let blocked_claim = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.claim_investor_payout(&investor_a);
+    }));
+    assert!(
+        blocked_claim.is_err(),
+        "investor claim must be blocked while legal hold is active"
+    );
+
+    // Hold off final time: claim resumes.
+    client.clear_legal_hold();
+    client.claim_investor_payout(&investor_a);
+    assert!(client.is_investor_claimed(&investor_a));
+    assert!(!client.get_legal_hold());
+
+    let invoice_id = client.get_escrow().invoice_id;
+    let expected = vec![
+        LegalHoldChanged {
+            name: symbol_short!("legalhld"),
+            invoice_id: invoice_id.clone(),
+            active: 1,
+        }
+        .to_xdr(&env, &contract_id),
+        LegalHoldChanged {
+            name: symbol_short!("legalhld"),
+            invoice_id: invoice_id.clone(),
+            active: 0,
+        }
+        .to_xdr(&env, &contract_id),
+        LegalHoldChanged {
+            name: symbol_short!("legalhld"),
+            invoice_id: invoice_id.clone(),
+            active: 1,
+        }
+        .to_xdr(&env, &contract_id),
+        LegalHoldChanged {
+            name: symbol_short!("legalhld"),
+            invoice_id: invoice_id.clone(),
+            active: 0,
+        }
+        .to_xdr(&env, &contract_id),
+        LegalHoldChanged {
+            name: symbol_short!("legalhld"),
+            invoice_id: invoice_id.clone(),
+            active: 1,
+        }
+        .to_xdr(&env, &contract_id),
+        LegalHoldChanged {
+            name: symbol_short!("legalhld"),
+            invoice_id,
+            active: 0,
+        }
+        .to_xdr(&env, &contract_id),
+    ];
+
+    // Ordering assertion for legal-hold toggles, allowing unrelated lifecycle events between them.
+    let all_events = env.events().all();
+    let mut cursor = 0usize;
+    for event in all_events {
+        if cursor < expected.len() && event == expected[cursor] {
+            cursor += 1;
+        }
+    }
+    assert_eq!(
+        cursor,
+        expected.len(),
+        "LegalHoldChanged events should appear in expected toggle order"
+    );
 }
 
 // --- Gold Standard Integration Test ---
