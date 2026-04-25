@@ -155,10 +155,10 @@ fn test_legal_hold_midflow_blocks_and_resumes_with_ordered_events() {
     ];
 
     // Ordering assertion for legal-hold toggles, allowing unrelated lifecycle events between them.
-    let all_events = env.events().all();
+    let all_events = env.events().all().events();
     let mut cursor = 0usize;
     for event in all_events {
-        if cursor < expected.len() && event == expected[cursor] {
+        if cursor < expected.len() && *event == expected[cursor] {
             cursor += 1;
         }
     }
