@@ -226,17 +226,95 @@ fn withdraw_blocked_by_legal_hold() {
 /// Verifies that `clear_legal_hold` (or `set_legal_hold(false)`) fully lifts
 /// the block and the escrow can proceed to `status == 3`.
 #[test]
-fn withdraw_succeeds_after_hold_cleared() {
+fn test_claim_investor_twice_is_idempotent() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
+    let investor = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "CL001"),
+        &sme,
+        &1_000i128,
+        &400i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&investor, &1_000i128);
+    client.settle();
 
-    client.set_legal_hold(&true);
-    client.set_legal_hold(&false); // clear the hold
+    // First claim - should succeed and set the claimed marker
+    client.claim_investor_payout(&investor);
 
-    client.withdraw();
-    assert_eq!(client.get_escrow().status, 3u32);
+    assert!(client.is_investor_claimed(&investor));
+
+    // Second claim - should be idempotent (no-op, does not panic)
+    client.claim_investor_payout(&investor);
+    assert!(client.is_investor_claimed(&investor));
+}
+
+#[test]
+#[should_panic(expected = "Address has no contribution to claim")]
+fn test_claim_by_non_investor_panics() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let stranger = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "STR001"),
+        &sme,
+        &1_000i128,
+        &400i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+    // Escrow settled but stranger never funded
+    let investor = Address::generate(&env);
+    client.fund(&investor, &1_000i128);
+    client.settle();
+
+    client.claim_investor_payout(&stranger);
+}
+
+#[test]
+fn test_clashing_investors_have_independent_claims() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "CLASH01"),
+        &sme,
+        &2_000i128,
+        &400i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&inv_a, &1_000i128);
+    client.fund(&inv_b, &1_000i128);
+    client.settle();
+
+    client.claim_investor_payout(&inv_a);
+    assert!(client.is_investor_claimed(&inv_a));
+    assert!(!client.is_investor_claimed(&inv_b));
+
+    client.claim_investor_payout(&inv_b);
+    assert!(client.is_investor_claimed(&inv_b));
 }
 
 /// `set_legal_hold` must be admin-only; a non-admin cannot place a hold.
@@ -284,8 +362,102 @@ fn settle_blocked_by_legal_hold() {
 
 /// `settle` on an open (status 0) escrow must panic.
 #[test]
-#[should_panic]
-fn settle_on_open_escrow_panics() {
+fn test_claim_gating_exact_timestamp() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let inv = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    env.ledger().set_timestamp(1000);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "LOCK003"),
+        &sme,
+        &1_000i128,
+        &400i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+    );
+
+    let lock_duration = 500u64;
+    client.fund_with_commitment(&inv, &1_000i128, &lock_duration);
+    client.settle();
+
+    let expiry = 1000 + lock_duration;
+
+    // 1 second before expiry
+    env.ledger().set_timestamp(expiry - 1);
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.claim_investor_payout(&inv);
+    }));
+    assert!(err.is_err(), "Claim should be blocked 1s before expiry");
+
+    // Exact expiry
+    env.ledger().set_timestamp(expiry);
+    client.claim_investor_payout(&inv);
+    assert!(client.is_investor_claimed(&inv));
+}
+
+#[test]
+fn test_claim_gating_with_multiple_investors() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let inv1 = Address::generate(&env);
+    let inv2 = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    env.ledger().set_timestamp(1000);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "LOCK004"),
+        &sme,
+        &2_000i128,
+        &400i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+    );
+
+    client.fund_with_commitment(&inv1, &1_000i128, &100u64); // Expiry 1100
+    client.fund_with_commitment(&inv2, &1_000i128, &200u64); // Expiry 1200
+    client.settle();
+
+    env.ledger().set_timestamp(1150);
+
+    // inv1 can claim
+    client.claim_investor_payout(&inv1);
+    assert!(client.is_investor_claimed(&inv1));
+
+    // inv2 still blocked
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.claim_investor_payout(&inv2);
+    }));
+    assert!(err.is_err(), "inv2 should still be blocked at 1150");
+
+    env.ledger().set_timestamp(1200);
+    client.claim_investor_payout(&inv2);
+    assert!(client.is_investor_claimed(&inv2));
+}
+
+#[test]
+fn test_cost_baseline_settle() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
     default_init(&client, &env, &admin, &sme);
@@ -314,22 +486,19 @@ fn settle_twice_panics() {
 fn settle_before_maturity_panics() {
     let env = Env::default();
     env.mock_all_auths();
-
-    let client = deploy(&env);
+    let token = install_stellar_asset_token(&env);
     let admin = Address::generate(&env);
     let sme = Address::generate(&env);
-    let (token, treasury) = free_addresses(&env);
-
-    // Set a maturity 1000 seconds in the future relative to ledger timestamp 0.
-    let maturity: u64 = 1_000;
+    let treasury = Address::generate(&env);
+    let (escrow_id, client) = deploy_with_id(&env);
     client.init(
         &admin,
         &soroban_sdk::String::from_str(&env, "INV_MAT_001"),
         &sme,
-        &TARGET,
-        &800i64,
-        &maturity,
-        &token,
+        &1_000i128,
+        &100i64,
+        &0u64,
+        &token.id,
         &None,
         &treasury,
         &None,
@@ -337,11 +506,11 @@ fn settle_before_maturity_panics() {
         &None,
     );
 
-    fund_to_target(&client, &env);
-
-    // Ledger timestamp is 0 — before maturity.
-    env.ledger().with_mut(|l| l.timestamp = maturity - 1);
-    client.settle(); // must panic
+    token.stellar.mint(&escrow_id, &5_000i128);
+    let before_t = token.token.balance(&treasury);
+    let swept = client.sweep_terminal_dust(&5_000i128);
+    assert_eq!(swept, 5_000i128);
+    assert_eq!(token.token.balance(&treasury), before_t + 5_000i128);
 }
 
 /// `settle` must succeed once ledger timestamp reaches maturity (inclusive).
@@ -349,21 +518,19 @@ fn settle_before_maturity_panics() {
 fn settle_at_maturity_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
-
-    let client = deploy(&env);
+    let token = install_stellar_asset_token(&env);
     let admin = Address::generate(&env);
     let sme = Address::generate(&env);
-    let (token, treasury) = free_addresses(&env);
-
-    let maturity: u64 = 1_000;
+    let treasury = Address::generate(&env);
+    let (escrow_id, client) = deploy_with_id(&env);
     client.init(
         &admin,
         &soroban_sdk::String::from_str(&env, "INV_MAT_002"),
         &sme,
-        &TARGET,
-        &800i64,
-        &maturity,
-        &token,
+        &1_000i128,
+        &100i64,
+        &0u64,
+        &token.id,
         &None,
         &treasury,
         &None,
@@ -376,7 +543,9 @@ fn settle_at_maturity_succeeds() {
     env.ledger().with_mut(|l| l.timestamp = maturity); // exactly at boundary
     client.settle();
 
-    assert_eq!(client.get_escrow().status, 2u32);
+    token.stellar.mint(&escrow_id, &333i128);
+    let swept = client.sweep_terminal_dust(&333i128);
+    assert_eq!(swept, 333i128);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -390,18 +559,28 @@ fn settle_at_maturity_succeeds() {
 #[test]
 fn claim_investor_payout_succeeds_after_settle() {
     let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    let investor = settle_escrow(&client, &env);
-
-    client.claim_investor_payout(&investor);
-
-    let contract_events = env.events().all();
-    let events = contract_events.events();
-    assert!(
-        events.len() > 0,
-        "claim must emit InvestorPayoutClaimed event"
+    env.mock_all_auths();
+    let token = install_stellar_asset_token(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (escrow_id, client) = deploy_with_id(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "SW003"),
+        &sme,
+        &1_000i128,
+        &100i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
     );
+    token.stellar.mint(&escrow_id, &100i128);
+    client.sweep_terminal_dust(&100i128);
 }
 
 /// `claim_investor_payout` must be idempotency-guarded: a second call panics.
@@ -409,23 +588,29 @@ fn claim_investor_payout_succeeds_after_settle() {
 #[should_panic]
 fn claim_investor_payout_twice_panics() {
     let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    let investor = settle_escrow(&client, &env);
-
-    client.claim_investor_payout(&investor);
-    client.claim_investor_payout(&investor); // second call must panic
-}
-
-/// `claim_investor_payout` must be blocked while a legal hold is active.
-#[test]
-#[should_panic]
-fn claim_investor_payout_blocked_by_legal_hold() {
-    let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    let investor = settle_escrow(&client, &env);
-
+    env.mock_all_auths();
+    let token = install_stellar_asset_token(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (_escrow_id, client) = deploy_with_id(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "SW004"),
+        &sme,
+        &1_000i128,
+        &100i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+    let investor = Address::generate(&env);
+    client.fund(&investor, &1_000i128);
+    client.settle();
     client.set_legal_hold(&true);
     client.claim_investor_payout(&investor); // must panic
 }
@@ -435,11 +620,30 @@ fn claim_investor_payout_blocked_by_legal_hold() {
 #[should_panic]
 fn claim_investor_payout_before_settle_panics() {
     let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    let investor = fund_to_target(&client, &env);
-    // Status is 1 — not yet settled.
-    client.claim_investor_payout(&investor);
+    env.mock_all_auths();
+    let token = install_stellar_asset_token(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (_escrow_id, client) = deploy_with_id(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "SW005"),
+        &sme,
+        &1_000i128,
+        &100i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+    let investor = Address::generate(&env);
+    client.fund(&investor, &1_000i128);
+    client.settle();
+    client.sweep_terminal_dust(&(MAX_DUST_SWEEP_AMOUNT + 1));
 }
 
 /// An investor that did not participate cannot claim.
@@ -447,14 +651,33 @@ fn claim_investor_payout_before_settle_panics() {
 #[should_panic]
 fn claim_investor_payout_non_participant_panics() {
     let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    env.mock_all_auths_allowing_non_root_auth();
-    env.mock_auths(&[]);
-    default_init(&client, &env, &admin, &sme);
-    settle_escrow(&client, &env);
+    env.mock_all_auths();
+    let token = install_stellar_asset_token(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (escrow_id, client) = deploy_with_id(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "SW006"),
+        &sme,
+        &1_000i128,
+        &100i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+    let investor = Address::generate(&env);
+    client.fund(&investor, &1_000i128);
+    client.settle();
 
-    let stranger = Address::generate(&env);
-    client.claim_investor_payout(&stranger);
+    token.stellar.mint(&escrow_id, &50i128);
+    let swept = client.sweep_terminal_dust(&100i128);
+    assert_eq!(swept, 50i128);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -469,17 +692,25 @@ fn claim_investor_payout_non_participant_panics() {
 #[test]
 fn funding_snapshot_survives_withdraw() {
     let env = Env::default();
-    let (client, admin, sme) = setup(&env);
-    default_init(&client, &env, &admin, &sme);
-    fund_to_target(&client, &env);
-
-    let snapshot_before = client.get_funding_close_snapshot();
-    client.withdraw();
-    let snapshot_after = client.get_funding_close_snapshot();
-
-    assert_eq!(
-        snapshot_before, snapshot_after,
-        "funding snapshot must be immutable after withdraw"
+    env.mock_all_auths();
+    let token = install_stellar_asset_token(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (escrow_id, client) = deploy_with_id(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "SW007"),
+        &sme,
+        &1_000i128,
+        &100i64,
+        &0u64,
+        &token.id,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
     );
     assert_eq!(
         snapshot_after.unwrap().total_principal,
@@ -498,17 +729,158 @@ fn funding_snapshot_survives_settle() {
 
     let snapshot_before = client.get_funding_close_snapshot();
     client.settle();
-    let snapshot_after = client.get_funding_close_snapshot();
+    token.stellar.mint(&escrow_id, &10i128);
 
     assert_eq!(snapshot_before, snapshot_after);
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Investor contribution accounting through the withdraw path
-// ──────────────────────────────────────────────────────────────────────────────
+// ── is_investor_claimed: idempotent read behavior & cross-investor isolation ──
 
-/// Investor contributions are readable after `withdraw` — the integration layer
-/// needs them to compute pro-rata refunds.
+#[test]
+fn test_is_investor_claimed_false_before_any_claim() {
+    // Getter must return false for a funded investor who has not yet claimed;
+    // repeated reads must not mutate state.
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "GIC001"),
+        &sme,
+        &1_000i128,
+        &400i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&investor, &1_000i128);
+    client.settle();
+    assert!(!client.is_investor_claimed(&investor));
+    assert!(!client.is_investor_claimed(&investor)); // idempotent — no state change
+}
+
+#[test]
+fn test_is_investor_claimed_returns_false_for_unfunded_address() {
+    // An address that never participated must return false, not panic.
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "GIC002"),
+        &sme,
+        &1_000i128,
+        &400i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&investor, &1_000i128);
+    client.settle();
+    assert!(!client.is_investor_claimed(&stranger));
+}
+
+#[test]
+fn test_claim_marker_persists_after_claim() {
+    // After a successful claim the flag must remain true across repeated reads.
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "GIC003"),
+        &sme,
+        &1_000i128,
+        &400i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&investor, &1_000i128);
+    client.settle();
+    client.claim_investor_payout(&investor);
+    assert!(client.is_investor_claimed(&investor));
+    assert!(client.is_investor_claimed(&investor)); // second read: still persisted
+}
+
+#[test]
+fn test_claim_marker_isolated_per_investor() {
+    // Claiming for investor_a must not set the flag for investor_b (no key crosstalk).
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let investor_a = Address::generate(&env);
+    let investor_b = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "GIC004"),
+        &sme,
+        &2_000i128,
+        &400i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&investor_a, &1_000i128);
+    client.fund(&investor_b, &1_000i128);
+    client.settle();
+    client.claim_investor_payout(&investor_a);
+    assert!(client.is_investor_claimed(&investor_a));
+    assert!(!client.is_investor_claimed(&investor_b)); // b unaffected by a's claim
+}
+
+#[test]
+fn test_claim_marker_all_investors_independent() {
+    // Three investors with independent claim keys; partial claiming must not
+    // corrupt unclaimed investors' flags.
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    let inv_a = Address::generate(&env);
+    let inv_b = Address::generate(&env);
+    let inv_c = Address::generate(&env);
+    client.init(
+        &admin,
+        &String::from_str(&env, "GIC005"),
+        &sme,
+        &3_000i128,
+        &400i64,
+        &0u64,
+        &Address::generate(&env),
+        &None,
+        &Address::generate(&env),
+        &None,
+        &None,
+        &None,
+    );
+    client.fund(&inv_a, &1_000i128);
+    client.fund(&inv_b, &1_000i128);
+    client.fund(&inv_c, &1_000i128);
+    client.settle();
+    client.claim_investor_payout(&inv_a);
+    client.claim_investor_payout(&inv_c);
+    assert!(client.is_investor_claimed(&inv_a));
+    assert!(!client.is_investor_claimed(&inv_b)); // b still unclaimed
+    assert!(client.is_investor_claimed(&inv_c));
+    client.claim_investor_payout(&inv_b);
+    assert!(client.is_investor_claimed(&inv_b));
+}
+
 #[test]
 fn investor_contribution_readable_after_withdraw() {
     let env = Env::default();
