@@ -263,9 +263,9 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
         &BASE_YIELD_BPS,
         &0u64, // No maturity for this test
         &funding_token,
-        &Some(yield_tiers),
+        &None, // registry
         &treasury,
-        &None,
+        &Some(yield_tiers),
         &None,
         &None,
     );
@@ -342,7 +342,7 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
     // Verify expected payout calculations (off-chain calculation for verification)
     let base_expected = calculate_expected_payout(base_amount, BASE_YIELD_BPS);
     let tier1_expected = calculate_expected_payout(tier1_amount, 1000);
-    let tier2_expected = calculate_expected_payout(tier2_amount, 1200);
+    let _tier2_expected = calculate_expected_payout(tier2_amount, 1200);
     let tier3_expected = calculate_expected_payout(tier3_amount, 1500);
     
     // Verify higher tiers would yield more absolute return

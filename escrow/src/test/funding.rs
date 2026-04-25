@@ -864,3 +864,565 @@ fn test_get_funding_close_snapshot_immutable_after_set() {
         "snapshot must be immutable after being set"
     );
 }
+
+// ============================================================================
+// Yield Tier Table Validation Tests
+// ============================================================================
+
+/// Tier table with strictly increasing min_lock_secs and non-decreasing yield_bps is valid.
+#[test]
+fn test_validate_yield_tiers_table_valid_ladder() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 850,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 200,
+        yield_bps: 900,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 500,
+        yield_bps: 1100,
+    });
+
+    // Should not panic — valid tier ordering
+    client.init(
+        &admin,
+        &String::from_str(&env, "VALID01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Empty tier table is valid (no tiers configured).
+#[test]
+fn test_validate_yield_tiers_table_empty_is_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let tiers = SorobanVec::new(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "EMPTY01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// None tier table is valid (tiering disabled).
+#[test]
+fn test_validate_yield_tiers_table_none_is_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "NONE01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+    );
+}
+
+/// Single tier with yield >= base is valid.
+#[test]
+fn test_validate_yield_tiers_table_single_tier_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 900,
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "SINGLE01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Tier yield_bps equal to base yield is valid (minimum boundary).
+#[test]
+fn test_validate_yield_tiers_table_tier_equal_to_base() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 800, // Equal to base
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "EQUAL01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Tier with yield_bps below base must panic.
+#[test]
+#[should_panic(expected = "tier yield_bps must be >= base yield_bps")]
+fn test_validate_yield_tiers_table_tier_below_base_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 700, // Below base 800
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "BELOW01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Tier with yield_bps > 10_000 must panic.
+#[test]
+#[should_panic(expected = "tier yield_bps must be 0..=10_000")]
+fn test_validate_yield_tiers_table_tier_yield_exceeds_max_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 10_001, // Exceeds max
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "EXCEED01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Tier with negative yield_bps must panic.
+#[test]
+#[should_panic(expected = "tier yield_bps must be 0..=10_000")]
+fn test_validate_yield_tiers_table_tier_yield_negative_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: -100, // Negative
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "NEG01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Tiers with non-strictly-increasing min_lock_secs (equal) must panic.
+#[test]
+#[should_panic(expected = "tiers must have strictly increasing min_lock_secs")]
+fn test_validate_yield_tiers_table_equal_min_lock_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 850,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100, // Equal to previous
+        yield_bps: 900,
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "EQLOCK01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Tiers with decreasing min_lock_secs must panic.
+#[test]
+#[should_panic(expected = "tiers must have strictly increasing min_lock_secs")]
+fn test_validate_yield_tiers_table_decreasing_min_lock_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 200,
+        yield_bps: 850,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100, // Decreasing
+        yield_bps: 900,
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "DECLOCK01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Tiers with decreasing yield_bps must panic (non-monotonic).
+#[test]
+#[should_panic(expected = "tiers must have non-decreasing yield_bps")]
+fn test_validate_yield_tiers_table_decreasing_yield_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 1000,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 200,
+        yield_bps: 900, // Decreasing
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "DECYIELD01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Tiers with equal yield_bps (non-decreasing) are valid.
+#[test]
+fn test_validate_yield_tiers_table_equal_yield_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 900,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 200,
+        yield_bps: 900, // Equal is valid (non-decreasing)
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "EQYIELD01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Maximum valid yield_bps (10_000) is accepted.
+#[test]
+fn test_validate_yield_tiers_table_max_yield_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 10_000, // Maximum valid
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "MAXYIELD01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Zero yield_bps in tier is valid if base is also zero.
+#[test]
+fn test_validate_yield_tiers_table_zero_yield_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 0,
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "ZEROYIELD01"),
+        &sme,
+        &10_000i128,
+        &0i64, // Base yield is 0
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Complex multi-tier ladder with all valid constraints.
+#[test]
+fn test_validate_yield_tiers_table_complex_ladder() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 30,
+        yield_bps: 500,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 90,
+        yield_bps: 600,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 180,
+        yield_bps: 750,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 365,
+        yield_bps: 1000,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 730,
+        yield_bps: 1500,
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "COMPLEX01"),
+        &sme,
+        &100_000i128,
+        &400i64, // Base yield
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}
+
+/// Second tier with yield below first tier must panic.
+#[test]
+#[should_panic(expected = "tiers must have non-decreasing yield_bps")]
+fn test_validate_yield_tiers_table_second_tier_below_first_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let mut tiers = SorobanVec::new(&env);
+    tiers.push_back(YieldTier {
+        min_lock_secs: 100,
+        yield_bps: 1000,
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 200,
+        yield_bps: 950, // Below previous tier
+    });
+    tiers.push_back(YieldTier {
+        min_lock_secs: 300,
+        yield_bps: 1100,
+    });
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "MIDLOW01"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &Some(tiers),
+        &None,
+        &None,
+    );
+}

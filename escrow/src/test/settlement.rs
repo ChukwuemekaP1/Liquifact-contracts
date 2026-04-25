@@ -17,10 +17,11 @@
 //! defined in `escrow/src/test.rs`. No cross-test state is shared.
 
 #[cfg(test)]
-use super::{default_init, deploy, free_addresses, setup, TARGET};
+use super::{default_init, deploy, deploy_with_id, free_addresses, install_stellar_asset_token, setup, TARGET};
+use crate::{FundingTargetUpdated, MAX_DUST_SWEEP_AMOUNT};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
-    Address, Env,
+    Address, Env, String,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -523,13 +524,14 @@ fn settle_at_maturity_succeeds() {
     let sme = Address::generate(&env);
     let treasury = Address::generate(&env);
     let (escrow_id, client) = deploy_with_id(&env);
+    let maturity = 1000u64;
     client.init(
         &admin,
         &soroban_sdk::String::from_str(&env, "INV_MAT_002"),
         &sme,
         &1_000i128,
         &100i64,
-        &0u64,
+        &maturity,
         &token.id,
         &None,
         &treasury,
@@ -697,12 +699,12 @@ fn funding_snapshot_survives_withdraw() {
     let admin = Address::generate(&env);
     let sme = Address::generate(&env);
     let treasury = Address::generate(&env);
-    let (escrow_id, client) = deploy_with_id(&env);
+    let (_escrow_id, client) = deploy_with_id(&env);
     client.init(
         &admin,
         &String::from_str(&env, "SW007"),
         &sme,
-        &1_000i128,
+        &TARGET,
         &100i64,
         &0u64,
         &token.id,
@@ -712,11 +714,16 @@ fn funding_snapshot_survives_withdraw() {
         &None,
         &None,
     );
+    fund_to_target(&client, &env);
+    let snapshot_before = client.get_funding_close_snapshot();
+    client.withdraw();
+    let snapshot_after = client.get_funding_close_snapshot();
     assert_eq!(
-        snapshot_after.unwrap().total_principal,
+        snapshot_after.as_ref().unwrap().total_principal,
         TARGET,
         "snapshot total_principal must equal funded amount"
     );
+    assert_eq!(snapshot_before, snapshot_after);
 }
 
 /// After `settle` the snapshot still matches what was recorded at fund-close.
@@ -729,7 +736,7 @@ fn funding_snapshot_survives_settle() {
 
     let snapshot_before = client.get_funding_close_snapshot();
     client.settle();
-    token.stellar.mint(&escrow_id, &10i128);
+    let snapshot_after = client.get_funding_close_snapshot();
 
     assert_eq!(snapshot_before, snapshot_after);
 }
