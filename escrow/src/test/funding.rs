@@ -1,5 +1,4 @@
 use super::*;
-use soroban_sdk::FromStr;
 
 // Funding, contributions, snapshots, tier selection, and fund-shaped cost baselines.
 
@@ -10,7 +9,7 @@ fn test_fund_and_settle() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INVMETA"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INVMETA"),
         &sme,
         &TARGET,
         &800i64,
@@ -36,7 +35,7 @@ fn test_fund_partial_then_full() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV002"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV002"),
         &sme,
         &TARGET,
         &800i64,
@@ -97,7 +96,7 @@ fn test_single_investor_contribution_tracked() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV020"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV020"),
         &sme,
         &TARGET,
         &800i64,
@@ -132,7 +131,7 @@ fn test_repeated_funding_accumulates_contribution() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV021"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV021"),
         &sme,
         &TARGET,
         &800i64,
@@ -158,7 +157,7 @@ fn test_multiple_investors_tracked_independently() {
     let inv_c = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV023"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV023"),
         &sme,
         &TARGET,
         &800i64,
@@ -191,7 +190,7 @@ fn test_contributions_sum_equals_funded_amount() {
     let inv_c = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV023b"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV023b"),
         &sme,
         &TARGET,
         &800i64,
@@ -219,7 +218,7 @@ fn test_cost_baseline_fund_partial() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV103"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV103"),
         &sme,
         &TARGET,
         &800i64,
@@ -241,7 +240,7 @@ fn test_cost_baseline_fund_full() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV104"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV104"),
         &sme,
         &TARGET,
         &800i64,
@@ -263,7 +262,7 @@ fn test_cost_baseline_fund_overshoot() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV105"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV105"),
         &sme,
         &TARGET,
         &800i64,
@@ -286,7 +285,7 @@ fn test_cost_baseline_fund_two_step_completion() {
     let investor = Address::generate(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "INV106"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "INV106"),
         &sme,
         &TARGET,
         &800i64,
@@ -314,7 +313,7 @@ fn test_funding_close_snapshot_captures_overfunded_total_once() {
     let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "SNAP001"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "SNAP001"),
         &sme,
         &TARGET,
         &800i64,
@@ -347,7 +346,7 @@ fn test_funding_snapshot_immutable_across_second_fund_after_funded() {
     let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "SNAP002"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "SNAP002"),
         &sme,
         &TARGET,
         &800i64,
@@ -380,7 +379,7 @@ fn test_pro_rata_weight_ratio_from_snapshot() {
     let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "SNAP003"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "SNAP003"),
         &sme,
         &TARGET,
         &800i64,
@@ -421,7 +420,7 @@ fn test_tiered_yield_and_follow_on_fund() {
     });
     client.init(
         &admin,
-        &String::from_str(&env, "TIER001"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "TIER001"),
         &sme,
         &10_000i128,
         &800i64,
@@ -458,7 +457,7 @@ fn test_tier_selection_edges_base_vs_high_bucket() {
     });
     client.init(
         &admin,
-        &String::from_str(&env, "TIER002"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "TIER002"),
         &sme,
         &20_000i128,
         &800i64,
@@ -493,7 +492,7 @@ fn test_fund_with_commitment_twice_panics() {
     });
     client.init(
         &admin,
-        &String::from_str(&env, "TIER003"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "TIER003"),
         &sme,
         &10_000i128,
         &800i64,
@@ -521,7 +520,7 @@ fn test_fund_then_fund_with_commitment_panics() {
     let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "SEQ001"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "SEQ001"),
         &sme,
         &10_000i128,
         &800i64,
@@ -558,7 +557,7 @@ fn test_tier_selection_ladder() {
 
     client.init(
         &admin,
-        &String::from_str(&env, "LADDER01"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "LADDER01"),
         &sme,
         &100_000i128,
         &800i64,
@@ -611,7 +610,7 @@ fn test_fund_with_commitment_zero_lock_behaves_as_fund() {
 
     client.init(
         &admin,
-        &String::from_str(&env, "ZERO001"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "ZERO001"),
         &sme,
         &10_000i128,
         &800i64,
@@ -649,7 +648,7 @@ fn test_init_bad_tier_order_panics() {
     });
     client.init(
         &admin,
-        &String::from_str(&env, "BADTIER"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "BADTIER"),
         &sme,
         &1_000i128,
         &800i64,
@@ -679,7 +678,7 @@ fn test_init_tier_yield_below_base_panics() {
     });
     client.init(
         &admin,
-        &String::from_str(&env, "BADT2"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "BADT2"),
         &sme,
         &1_000i128,
         &800i64,
@@ -705,7 +704,7 @@ fn test_differential_funding_target_eq_exact_cross() {
     let t = 5_000i128;
     client.init(
         &admin,
-        &String::from_str(&env, "DIFF002"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "DIFF002"),
         &sme,
         &t,
         &100i64,
@@ -736,7 +735,7 @@ fn test_ledger_sequence_recorded_in_snapshot_with_tick() {
     let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "DIFF003"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "DIFF003"),
         &sme,
         &1_000i128,
         &100i64,
@@ -765,7 +764,7 @@ fn test_get_funding_close_snapshot_absent_before_any_funding() {
     let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "SNAP010"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "SNAP010"),
         &sme,
         &TARGET,
         &800i64,
@@ -796,7 +795,7 @@ fn test_get_funding_close_snapshot_present_after_funding_completes() {
     let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "SNAP011"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "SNAP011"),
         &sme,
         &TARGET,
         &800i64,
@@ -838,7 +837,7 @@ fn test_get_funding_close_snapshot_immutable_after_set() {
     let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
-        &String::from_str(&env, "SNAP012"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "SNAP012"),
         &sme,
         &TARGET,
         &800i64,

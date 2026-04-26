@@ -1,6 +1,6 @@
 use super::super::external_calls::transfer_funding_token_with_balance_checks;
 use super::*;
-use soroban_sdk::{contract, contractimpl, FromStr};
+use soroban_sdk::{contract, contractimpl};
 
 // External-call and token-integration assumptions that should stay separate
 // from escrow state-machine assertions.
@@ -68,7 +68,7 @@ fn test_escrow_gold_standard_happy_path_open_overfund_snapshot_settle_claim() {
     // === PHASE 1: OPEN - Initialize Escrow ===
     client.init(
         &admin,
-        &String::from_str(&env, "GOLD001"), // Invoice ID
+        &String::from_strsoroban_sdk::String::from_str(&env, "GOLD001"), // Invoice ID
         &sme,
         &TARGET_USDC,
         &YIELD_BPS,
@@ -299,7 +299,7 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
     // Initialize with tiered yield
     client.init(
         &admin,
-        &String::from_str(&env, "TIER001"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "TIER001"),
         &sme,
         &TARGET_USDC,
         &BASE_YIELD_BPS,
@@ -419,7 +419,7 @@ fn test_collateral_record_is_metadata_only_and_does_not_invoke_token_contract() 
 
     client.init(
         &admin,
-        &String::from_str(&env, "COLTI001"),
+        &String::from_strsoroban_sdk::String::from_str(&env, "COLTI001"),
         &sme,
         &10_000i128,
         &800i64,
