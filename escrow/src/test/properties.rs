@@ -442,7 +442,7 @@ fn prop_funded_amount_respects_funding_target() {
         &None,
     );
 
-let fund_amount = target + excess;
+    let fund_amount = target + excess;
     let after = client.fund(&investor, &fund_amount);
     assert_eq!(
         after.funded_amount, fund_amount,

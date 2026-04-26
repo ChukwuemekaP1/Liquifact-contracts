@@ -18,7 +18,8 @@
 
 #[cfg(test)]
 use super::{
-    default_init, deploy, deploy_with_id, free_addresses, install_stellar_asset_token, setup, TARGET,
+    default_init, deploy, deploy_with_id, free_addresses, install_stellar_asset_token, setup,
+    TARGET,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
