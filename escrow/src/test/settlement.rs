@@ -709,10 +709,7 @@ fn settle_writes_status_to_storage() {
     default_init(&client, &env, &admin, &sme);
     fund_to_target(&client, &env);
 
-    assert_eq!(
-        client.get_escrow().status, 1u32,
-        "precondition: funded"
-    );
+    assert_eq!(client.get_escrow().status, 1u32, "precondition: funded");
     client.settle();
 
     let reloaded = client.get_escrow();
