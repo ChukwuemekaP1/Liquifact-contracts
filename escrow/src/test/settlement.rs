@@ -477,6 +477,348 @@ fn settle_twice_panics() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Maturity gate — settle is time-gated when `maturity > 0`; bypass when 0
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `settle` succeeds immediately when `maturity == 0` regardless of ledger time.
+#[test]
+fn settle_with_maturity_zero_succeeds_immediately() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, treasury) = free_addresses(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "MAT001"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64, // maturity = 0
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    fund_to_target(&client, &env);
+
+    env.ledger().set_timestamp(0); // explicitly at epoch
+    client.settle();
+
+    assert_eq!(
+        client.get_escrow().status, 2u32,
+        "status must be 2 (settled) with maturity == 0 even at epoch timestamp"
+    );
+}
+
+/// `settle` with `maturity == 0` skips time-check and sets EscrowSettled.maturity to 0.
+#[test]
+fn settle_maturity_zero_event_maturity_field_is_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, treasury) = free_addresses(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "MAT002"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &0u64,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    fund_to_target(&client, &env);
+    client.settle();
+
+    let escrow = client.get_escrow();
+    assert_eq!(escrow.maturity, 0u64, "maturity stored as 0");
+    assert_eq!(escrow.status, 2u32, "settled");
+}
+
+/// `settle` with `maturity > 0` must be rejected before the maturity timestamp.
+#[test]
+#[should_panic(expected = "Escrow has not yet reached maturity")]
+fn settle_before_maturity_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, treasury) = free_addresses(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    let maturity_ts: u64 = 1_700_000_000;
+    client.init(
+        &admin,
+        &String::from_str(&env, "MAT003"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &maturity_ts,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    fund_to_target(&client, &env);
+
+    env.ledger().set_timestamp(maturity_ts - 1); // 1 second before
+    client.settle();
+}
+
+/// `settle` with `maturity > 0` succeeds at exactly the maturity timestamp.
+#[test]
+fn settle_at_maturity_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, treasury) = free_addresses(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    let maturity_ts: u64 = 1_800_000_000;
+    client.init(
+        &admin,
+        &String::from_str(&env, "MAT004"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &maturity_ts,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    fund_to_target(&client, &env);
+
+    env.ledger().set_timestamp(maturity_ts);
+    client.settle();
+
+    assert_eq!(client.get_escrow().status, 2u32);
+    assert_eq!(client.get_escrow().maturity, maturity_ts);
+}
+
+/// `settle` with `maturity > 0` succeeds long after maturity.
+#[test]
+fn settle_after_maturity_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, treasury) = free_addresses(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    let maturity_ts: u64 = 1_700_000_000;
+    client.init(
+        &admin,
+        &String::from_str(&env, "MAT005"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &maturity_ts,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    fund_to_target(&client, &env);
+
+    env.ledger().set_timestamp(maturity_ts + 1_000_000); // well after maturity
+    client.settle();
+
+    assert_eq!(client.get_escrow().status, 2u32);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// EscrowSettled event — field validation and storage writes
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `settle` emits an `EscrowSettled` event with correct fields.
+#[test]
+fn settle_emits_escrow_settled_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, treasury) = free_addresses(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    let yield_bps: i64 = 400i64;
+    let maturity_ts: u64 = 0u64;
+    client.init(
+        &admin,
+        &String::from_str(&env, "EVT001"),
+        &sme,
+        &TARGET,
+        &yield_bps,
+        &maturity_ts,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    fund_to_target(&client, &env);
+
+    let events_before = env.events().all();
+    client.settle();
+    let events_after = env.events().all();
+
+    let new_events: Vec<_> = events_after
+        .events()
+        .iter()
+        .filter(|e| !events_before.events().contains(e))
+        .collect();
+
+    assert!(
+        !new_events.is_empty(),
+        "settle must emit at least one event"
+    );
+}
+
+/// `settle` persists the status change to storage.
+#[test]
+fn settle_writes_status_to_storage() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+
+    assert_eq!(client.get_escrow().status, 1u32, "precondition: funded");
+    client.settle();
+
+    let reloaded = client.get_escrow();
+    assert_eq!(reloaded.status, 2u32, "status must be persisted as 2 after settle");
+    assert_eq!(reloaded.funded_amount, TARGET, "funded_amount unchanged by settle");
+}
+
+/// `settle` preserves non-status fields after transition.
+#[test]
+fn settle_preserves_escrow_fields() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+
+    let pre = client.get_escrow();
+    client.settle();
+    let post = client.get_escrow();
+
+    assert_eq!(post.invoice_id, pre.invoice_id);
+    assert_eq!(post.admin, pre.admin);
+    assert_eq!(post.sme_address, pre.sme_address);
+    assert_eq!(post.amount, pre.amount);
+    assert_eq!(post.funding_target, pre.funding_target);
+    assert_eq!(post.funded_amount, pre.funded_amount);
+    assert_eq!(post.yield_bps, pre.yield_bps);
+    assert_eq!(post.maturity, pre.maturity);
+}
+
+/// `settle` must be blocked by legal hold regardless of maturity.
+#[test]
+#[should_panic(expected = "Legal hold blocks settlement finalization")]
+fn settle_blocked_by_legal_hold_when_maturity_not_reached() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, treasury) = free_addresses(&env);
+    let admin = Address::generate(&env);
+    let sme = Address::generate(&env);
+    let client = deploy(&env);
+
+    let maturity_ts: u64 = 2_000_000_000;
+    client.init(
+        &admin,
+        &String::from_str(&env, "LHMAT01"),
+        &sme,
+        &TARGET,
+        &800i64,
+        &maturity_ts,
+        &token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    fund_to_target(&client, &env);
+    client.set_legal_hold(&true);
+    client.settle();
+}
+
+/// `settle` must panic if SME auth is not provided.
+#[test]
+#[should_panic]
+fn settle_requires_sme_auth() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+
+    env.mock_auths(&[]); // clear mocks — auth will fail
+    client.settle();
+}
+
+/// `settle` on open (status 0) escrow must panic.
+#[test]
+#[should_panic(expected = "Escrow must be funded before settlement")]
+fn settle_on_open_escrow_panics() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    // No funding — status is still 0
+    client.settle();
+}
+
+/// `settle` on withdrawn (status 3) escrow must panic.
+#[test]
+#[should_panic]
+fn settle_on_withdrawn_escrow_panics() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+    client.withdraw(); // status → 3
+    client.settle();
+}
+
+/// `settle` on already settled (status 2) escrow must panic.
+#[test]
+#[should_panic]
+fn settle_on_settled_escrow_panics() {
+    let env = Env::default();
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+    client.settle(); // status → 2
+    client.settle(); // must panic
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Maturity gate — settle is time-gated when `maturity > 0`
 // ──────────────────────────────────────────────────────────────────────────────
 
