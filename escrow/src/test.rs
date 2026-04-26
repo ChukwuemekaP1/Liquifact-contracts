@@ -1,12 +1,12 @@
 use super::{
-    DataKey, LiquifactEscrow, LiquifactEscrowClient, YieldTier, MAX_DUST_SWEEP_AMOUNT,
-    SCHEMA_VERSION,
+    DataKey, EscrowFunded, FundingTargetUpdated, LiquifactEscrow, LiquifactEscrowClient, YieldTier,
+    MAX_DUST_SWEEP_AMOUNT, SCHEMA_VERSION,
 };
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Ledger as _},
+    testutils::{Address as _, Events, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    Address, Env, String, Vec as SorobanVec,
+    Address, Env, Event, String, Vec as SorobanVec,
 };
 
 // Focused test tree for escrow behavior. Shared helpers live here so feature

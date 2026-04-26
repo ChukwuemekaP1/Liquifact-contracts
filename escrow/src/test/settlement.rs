@@ -17,10 +17,13 @@
 //! defined in `escrow/src/test.rs`. No cross-test state is shared.
 
 #[cfg(test)]
-use super::{default_init, deploy, free_addresses, setup, TARGET};
+use super::{
+    default_init, deploy, deploy_with_id, free_addresses, install_stellar_asset_token, setup,
+    MAX_DUST_SWEEP_AMOUNT, TARGET,
+};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
-    Address, Env,
+    Address, Env, String,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -123,7 +126,7 @@ fn withdraw_emits_event() {
     let contract_events = env.events().all();
     let events = contract_events.events();
     assert!(
-        events.len() > 0,
+        !events.is_empty(),
         "withdraw must emit at least one contract event"
     );
 }
@@ -198,7 +201,7 @@ fn fund_after_withdraw_panics() {
     fund_to_target(&client, &env);
     client.withdraw(); // status → 3
     let late_investor = Address::generate(&env);
-    client.fund(&late_investor, &1_000_0000000i128); // must panic — fund requires status == 0
+    client.fund(&late_investor, &10_000_000_000_i128); // must panic — fund requires status == 0
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -461,6 +464,7 @@ fn test_cost_baseline_settle() {
     let env = Env::default();
     let (client, admin, sme) = setup(&env);
     default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
     client.settle();
 }
 
@@ -482,35 +486,32 @@ fn settle_twice_panics() {
 
 /// `settle` must be rejected if the current ledger timestamp is before maturity.
 #[test]
-#[should_panic]
+#[should_panic(expected = "Escrow has not yet reached maturity")]
 fn settle_before_maturity_panics() {
     let env = Env::default();
     env.mock_all_auths();
-    let token = install_stellar_asset_token(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let (escrow_id, client) = deploy_with_id(&env);
+    let (client, admin, sme) = setup(&env);
+    let maturity = 1000u64;
+    let (tok, tre) = free_addresses(&env);
     client.init(
         &admin,
         &soroban_sdk::String::from_str(&env, "INV_MAT_001"),
         &sme,
         &1_000i128,
         &100i64,
-        &0u64,
-        &token.id,
+        &maturity,
+        &tok,
         &None,
-        &treasury,
+        &tre,
         &None,
         &None,
         &None,
     );
 
-    token.stellar.mint(&escrow_id, &5_000i128);
-    let before_t = token.token.balance(&treasury);
-    let swept = client.sweep_terminal_dust(&5_000i128);
-    assert_eq!(swept, 5_000i128);
-    assert_eq!(token.token.balance(&treasury), before_t + 5_000i128);
+    fund_to_target(&client, &env);
+
+    env.ledger().set_timestamp(maturity - 1);
+    client.settle();
 }
 
 /// `settle` must succeed once ledger timestamp reaches maturity (inclusive).
@@ -523,13 +524,14 @@ fn settle_at_maturity_succeeds() {
     let sme = Address::generate(&env);
     let treasury = Address::generate(&env);
     let (escrow_id, client) = deploy_with_id(&env);
+    let maturity = 1000u64;
     client.init(
         &admin,
         &soroban_sdk::String::from_str(&env, "INV_MAT_002"),
         &sme,
         &1_000i128,
         &100i64,
-        &0u64,
+        &maturity,
         &token.id,
         &None,
         &treasury,
@@ -564,7 +566,7 @@ fn claim_investor_payout_succeeds_after_settle() {
     let admin = Address::generate(&env);
     let sme = Address::generate(&env);
     let treasury = Address::generate(&env);
-    let (escrow_id, client) = deploy_with_id(&env);
+    let (_escrow_id, client) = deploy_with_id(&env);
     client.init(
         &admin,
         &String::from_str(&env, "SW003"),
@@ -579,8 +581,12 @@ fn claim_investor_payout_succeeds_after_settle() {
         &None,
         &None,
     );
-    token.stellar.mint(&escrow_id, &100i128);
-    client.sweep_terminal_dust(&100i128);
+    let investor = Address::generate(&env);
+    client.fund(&investor, &1_000i128);
+    client.settle();
+
+    client.claim_investor_payout(&investor);
+    assert!(client.is_investor_claimed(&investor));
 }
 
 /// `claim_investor_payout` must be idempotency-guarded: a second call panics.
@@ -656,7 +662,7 @@ fn claim_investor_payout_non_participant_panics() {
     let admin = Address::generate(&env);
     let sme = Address::generate(&env);
     let treasury = Address::generate(&env);
-    let (escrow_id, client) = deploy_with_id(&env);
+    let (_escrow_id, client) = deploy_with_id(&env);
     client.init(
         &admin,
         &String::from_str(&env, "SW006"),
@@ -675,9 +681,8 @@ fn claim_investor_payout_non_participant_panics() {
     client.fund(&investor, &1_000i128);
     client.settle();
 
-    token.stellar.mint(&escrow_id, &50i128);
-    let swept = client.sweep_terminal_dust(&100i128);
-    assert_eq!(swept, 50i128);
+    let non_participant = Address::generate(&env);
+    client.claim_investor_payout(&non_participant); // must panic
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -693,29 +698,21 @@ fn claim_investor_payout_non_participant_panics() {
 fn funding_snapshot_survives_withdraw() {
     let env = Env::default();
     env.mock_all_auths();
-    let token = install_stellar_asset_token(&env);
-    let admin = Address::generate(&env);
-    let sme = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let (escrow_id, client) = deploy_with_id(&env);
-    client.init(
-        &admin,
-        &String::from_str(&env, "SW007"),
-        &sme,
-        &1_000i128,
-        &100i64,
-        &0u64,
-        &token.id,
-        &None,
-        &treasury,
-        &None,
-        &None,
-        &None,
-    );
+    let (client, admin, sme) = setup(&env);
+    default_init(&client, &env, &admin, &sme);
+    fund_to_target(&client, &env);
+
+    let snapshot_before = client
+        .get_funding_close_snapshot()
+        .expect("snapshot exists after fund");
+    client.withdraw();
+
+    let snapshot_after = client
+        .get_funding_close_snapshot()
+        .expect("snapshot exists after withdraw");
     assert_eq!(
-        snapshot_after.unwrap().total_principal,
-        TARGET,
-        "snapshot total_principal must equal funded amount"
+        snapshot_before, snapshot_after,
+        "snapshot must be immutable after withdraw"
     );
 }
 
@@ -723,15 +720,23 @@ fn funding_snapshot_survives_withdraw() {
 #[test]
 fn funding_snapshot_survives_settle() {
     let env = Env::default();
+    env.mock_all_auths();
     let (client, admin, sme) = setup(&env);
     default_init(&client, &env, &admin, &sme);
     fund_to_target(&client, &env);
 
-    let snapshot_before = client.get_funding_close_snapshot();
+    let snapshot_before = client
+        .get_funding_close_snapshot()
+        .expect("snapshot exists after fund");
     client.settle();
-    token.stellar.mint(&escrow_id, &10i128);
 
-    assert_eq!(snapshot_before, snapshot_after);
+    let snapshot_after = client
+        .get_funding_close_snapshot()
+        .expect("snapshot exists after settle");
+    assert_eq!(
+        snapshot_before, snapshot_after,
+        "snapshot must be immutable after settle"
+    );
 }
 
 // ── is_investor_claimed: idempotent read behavior & cross-investor isolation ──
@@ -931,17 +936,6 @@ fn multi_investor_contributions_preserved_after_withdraw() {
 #[test]
 fn no_state_mutation_possible_after_withdraw() {
     // Each sub-case uses its own Env to keep failures isolated.
-    macro_rules! assert_panics_after_withdraw {
-        ($block:expr) => {{
-            let env = Env::default();
-            let (client, admin, sme) = setup(&env);
-            default_init(&client, &env, &admin, &sme);
-            fund_to_target(&client, &env);
-            client.withdraw();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $block));
-            assert!(result.is_err(), "expected panic but call succeeded");
-        }};
-    }
 
     // settle after withdraw
     {
@@ -978,7 +972,7 @@ fn no_state_mutation_possible_after_withdraw() {
         client.withdraw();
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let late = Address::generate(&env);
-            client.fund(&late, &1_000_0000000i128);
+            client.fund(&late, &10_000_000_000_i128);
         }));
         assert!(r.is_err(), "fund after withdraw must panic");
     }

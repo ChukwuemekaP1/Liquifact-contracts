@@ -864,3 +864,108 @@ fn test_get_funding_close_snapshot_immutable_after_set() {
         "snapshot must be immutable after being set"
     );
 }
+
+#[test]
+fn test_funding_close_snapshot_event_emission_parity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let inv = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    let target = 10_000i128;
+    client.init(
+        &admin,
+        &String::from_str(&env, "EVT001"),
+        &sme,
+        &target,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Over-fund by 5,000
+    let overfund = 5_000i128;
+    client.fund(&inv, &(target + overfund));
+
+    // Capture events immediately after the fund call!
+    // env.events().all() only returns events from the *last* contract invocation.
+    let contract_events = env.events().all();
+    let actual_events = contract_events.events();
+
+    // 1. Verify snapshot
+    let snap = client.get_funding_close_snapshot().expect("snapshot");
+    assert_eq!(snap.total_principal, target + overfund);
+    assert_eq!(snap.funding_target, target);
+    assert_eq!(snap.closed_at_ledger_timestamp, env.ledger().timestamp());
+    assert_eq!(snap.closed_at_ledger_sequence, env.ledger().sequence());
+
+    // 2. Verify events
+    let expected_event_data = EscrowFunded {
+        name: symbol_short!("funded"),
+        invoice_id: client.get_escrow().invoice_id,
+        investor: inv,
+        amount: target + overfund,
+        funded_amount: target + overfund,
+        status: 1u32,
+        investor_effective_yield_bps: 800,
+    };
+
+    let expected_events = std::vec![expected_event_data.to_xdr(&env, &client.address)];
+    assert!(
+        !actual_events.is_empty(),
+        "Should have at least one event: {:?}",
+        actual_events
+    );
+    assert_eq!(
+        actual_events[actual_events.len() - 1],
+        expected_events[0],
+        "Last event must match expected EscrowFunded format"
+    );
+}
+
+#[test]
+fn test_funding_snapshot_write_once_even_if_status_reset_could_happen() {
+    // This test verifies that the write-once behavior is naturally protected
+    // by the state machine and the explicit `!has` check.
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, sme) = setup(&env);
+    let inv = Address::generate(&env);
+    let (tok, tre) = free_addresses(&env);
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "W1001"),
+        &sme,
+        &10_000i128,
+        &800i64,
+        &0u64,
+        &tok,
+        &None,
+        &tre,
+        &None,
+        &None,
+        &None,
+    );
+
+    // First funding that triggers snapshot
+    client.fund(&inv, &10_000i128);
+    let s1 = client.get_funding_close_snapshot().unwrap();
+
+    // We can't fund again because status is 1 and fund() asserts status == 0.
+    // This confirms the "write-once" is naturally protected by the state machine.
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.fund(&inv, &1i128);
+    }));
+    assert!(err.is_err(), "Funding after status 1 must panic");
+
+    let s2 = client.get_funding_close_snapshot().unwrap();
+    assert_eq!(s1, s2, "Snapshot must remain identical");
+}
