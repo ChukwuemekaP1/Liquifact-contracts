@@ -565,3 +565,100 @@ fn test_external_wrapper_panics_when_undercollateralized() {
     token.stellar.mint(&holder, &1i128);
     transfer_funding_token_with_balance_checks(&env, &token.id, &holder, &treasury, 10i128);
 }
+
+/// **MIDFLOW LEGAL-HOLD SCENARIO**
+///
+/// What a user sees:
+/// - Funding starts normally.
+/// - Compliance enables legal hold, so new funding and settlement are blocked.
+/// - Compliance clears legal hold, and the same operations proceed successfully.
+///
+/// This test also asserts `LegalHoldChanged` ordering:
+/// `active=1` must be emitted before `active=0`.
+#[test]
+fn test_legal_hold_midflow_blocks_then_resumes_with_ordered_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, sme) = setup(&env);
+    let investor = Address::generate(&env);
+    let funding_token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let contract_id = client.address.clone();
+    let invoice_id = symbol_short!("LHM001");
+
+    client.init(
+        &admin,
+        &String::from_str(&env, "LHM001"),
+        &sme,
+        &10_000i128,
+        &900i64,
+        &0u64,
+        &funding_token,
+        &None,
+        &treasury,
+        &None,
+        &None,
+        &None,
+    );
+
+    // Initial funding succeeds while hold is off.
+    let open_state = client.fund(&investor, &4_000i128);
+    assert_eq!(open_state.status, 0);
+
+    // Hold on: next funding + settle attempts must be blocked.
+    client.set_legal_hold(&true);
+    assert!(client.get_legal_hold());
+
+    let fund_blocked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.fund(&investor, &1_000i128);
+    }));
+    assert!(fund_blocked.is_err(), "fund must be blocked while hold is active");
+
+    let settle_blocked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.settle();
+    }));
+    assert!(
+        settle_blocked.is_err(),
+        "settle must be blocked while hold is active"
+    );
+
+    // Hold off: flow resumes and reaches funded + settled.
+    client.clear_legal_hold();
+    assert!(!client.get_legal_hold());
+
+    let funded_state = client.fund(&investor, &6_000i128);
+    assert_eq!(funded_state.status, 1, "escrow should become funded");
+
+    let settled_state = client.settle();
+    assert_eq!(settled_state.status, 2, "escrow should settle after hold is cleared");
+
+    // Assert legal-hold event ordering.
+    let all_events = env.events().all();
+    let hold_on_xdr = super::super::LegalHoldChanged {
+        name: symbol_short!("legalhld"),
+        invoice_id,
+        active: 1,
+    }
+    .to_xdr(&env, &contract_id);
+    let hold_off_xdr = super::super::LegalHoldChanged {
+        name: symbol_short!("legalhld"),
+        invoice_id,
+        active: 0,
+    }
+    .to_xdr(&env, &contract_id);
+
+    let hold_on_pos = all_events
+        .iter()
+        .position(|evt| *evt == hold_on_xdr)
+        .expect("expected legal hold enable event");
+    let hold_off_pos = all_events
+        .iter()
+        .position(|evt| *evt == hold_off_xdr)
+        .expect("expected legal hold clear event");
+
+    assert!(
+        hold_on_pos < hold_off_pos,
+        "LegalHoldChanged(active=1) must occur before active=0"
+    );
+}
