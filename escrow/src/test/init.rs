@@ -1,4 +1,5 @@
 use super::*;
+use soroban_sdk::FromStr;
 
 // Initialization, getters, invoice-id validation, and init-shaped cost baselines.
 
