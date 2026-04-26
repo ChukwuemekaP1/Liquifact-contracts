@@ -241,7 +241,10 @@ fn test_escrow_gold_standard_happy_path_open_overfund_snapshot_settle_claim() {
 
     // Verify escrow remains in settled state
     let final_escrow = client.get_escrow();
-    assert_eq!(final_escrow.status, 2, "Escrow should remain in Settled status");
+    assert_eq!(
+        final_escrow.status, 2,
+        "Escrow should remain in Settled status"
+    );
 }
 
 /// Helper function to calculate expected payout using the same formula as the contract.
@@ -274,9 +277,18 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
     let yield_tiers = SorobanVec::from_array(
         &env,
         [
-            YieldTier { min_lock_secs: 90 * 24 * 60 * 60, yield_bps: 1000 }, // 90 days, 10%
-            YieldTier { min_lock_secs: 180 * 24 * 60 * 60, yield_bps: 1200 }, // 180 days, 12%
-            YieldTier { min_lock_secs: 365 * 24 * 60 * 60, yield_bps: 1500 }, // 365 days, 15%
+            YieldTier {
+                min_lock_secs: 90 * 24 * 60 * 60,
+                yield_bps: 1000,
+            }, // 90 days, 10%
+            YieldTier {
+                min_lock_secs: 180 * 24 * 60 * 60,
+                yield_bps: 1200,
+            }, // 180 days, 12%
+            YieldTier {
+                min_lock_secs: 365 * 24 * 60 * 60,
+                yield_bps: 1500,
+            }, // 365 days, 15%
         ],
     );
 
@@ -309,7 +321,10 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
     let base_amount = 5_000 * USDC_DECIMALS;
     client.fund(&investor_base, &base_amount);
     let base_yield = client.get_investor_yield_bps(&investor_base);
-    assert_eq!(base_yield, BASE_YIELD_BPS, "Base investor should get base yield");
+    assert_eq!(
+        base_yield, BASE_YIELD_BPS,
+        "Base investor should get base yield"
+    );
 
     // Tier 1 investor (90 days) - gets 10%
     let tier1_amount = 8_000 * USDC_DECIMALS;
@@ -341,16 +356,28 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
 
     // Base investor can claim immediately
     let base_claim_time = client.get_investor_claim_not_before(&investor_base);
-    assert_eq!(base_claim_time, 0, "Base investor should have no claim lock");
+    assert_eq!(
+        base_claim_time, 0,
+        "Base investor should have no claim lock"
+    );
 
     // Tiered investors have appropriate claim locks
     let tier1_claim_time = client.get_investor_claim_not_before(&investor_tier1);
     let tier2_claim_time = client.get_investor_claim_not_before(&investor_tier2);
     let tier3_claim_time = client.get_investor_claim_not_before(&investor_tier3);
 
-    assert!(tier1_claim_time > current_time, "Tier 1 should have future claim time");
-    assert!(tier2_claim_time > tier1_claim_time, "Tier 2 should have longer lock than Tier 1");
-    assert!(tier3_claim_time > tier2_claim_time, "Tier 3 should have longest lock");
+    assert!(
+        tier1_claim_time > current_time,
+        "Tier 1 should have future claim time"
+    );
+    assert!(
+        tier2_claim_time > tier1_claim_time,
+        "Tier 2 should have longer lock than Tier 1"
+    );
+    assert!(
+        tier3_claim_time > tier2_claim_time,
+        "Tier 3 should have longest lock"
+    );
 
     // Fast-forward past all lock periods
     env.ledger().with_mut(|li| {
@@ -374,7 +401,10 @@ fn test_escrow_tiered_yield_with_commitment_locks() {
     let base_expected = calculate_expected_payout(base_amount, BASE_YIELD_BPS);
     let tier3_yield_amount = tier3_expected - tier3_amount;
     let base_yield_amount = base_expected - base_amount;
-    assert!(tier3_yield_amount > base_yield_amount, "Higher tier should yield more absolute return");
+    assert!(
+        tier3_yield_amount > base_yield_amount,
+        "Higher tier should yield more absolute return"
+    );
 }
 
 // --- Existing Tests (Preserved) ---
