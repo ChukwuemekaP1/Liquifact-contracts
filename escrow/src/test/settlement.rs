@@ -25,7 +25,6 @@ use soroban_sdk::{
     testutils::{Address as _, Events, Ledger as _},
     Address, Env,
 };
-use std::str::FromStr;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
