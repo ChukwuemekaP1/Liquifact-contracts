@@ -511,7 +511,8 @@ fn settle_with_maturity_zero_succeeds_immediately() {
     client.settle();
 
     assert_eq!(
-        client.get_escrow().status, 2u32,
+        client.get_escrow().status,
+        2u32,
         "status must be 2 (settled) with maturity == 0 even at epoch timestamp"
     );
 }
@@ -708,12 +709,21 @@ fn settle_writes_status_to_storage() {
     default_init(&client, &env, &admin, &sme);
     fund_to_target(&client, &env);
 
-    assert_eq!(client.get_escrow().status, 1u32, "precondition: funded");
+    assert_eq!(
+        client.get_escrow().status, 1u32,
+        "precondition: funded"
+    );
     client.settle();
 
     let reloaded = client.get_escrow();
-    assert_eq!(reloaded.status, 2u32, "status must be persisted as 2 after settle");
-    assert_eq!(reloaded.funded_amount, TARGET, "funded_amount unchanged by settle");
+    assert_eq!(
+        reloaded.status, 2u32,
+        "status must be persisted as 2 after settle"
+    );
+    assert_eq!(
+        reloaded.funded_amount, TARGET,
+        "funded_amount unchanged by settle"
+    );
 }
 
 /// `settle` preserves non-status fields after transition.
