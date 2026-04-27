@@ -218,10 +218,7 @@ fn test_transfer_admin_unauthorized_no_event_emitted() {
         client.transfer_admin(&new_admin);
     }));
 
-    assert!(
-        result.is_err(),
-        "Unauthorized transfer should panic"
-    );
+    assert!(result.is_err(), "Unauthorized transfer should panic");
 
     // Verify no new events were emitted
     let events_after = env.events().all().events().len();
@@ -262,10 +259,7 @@ fn test_transfer_admin_no_op_no_event_emitted() {
         client.transfer_admin(&admin);
     }));
 
-    assert!(
-        result.is_err(),
-        "No-op transfer should panic"
-    );
+    assert!(result.is_err(), "No-op transfer should panic");
 
     // Verify no new events were emitted
     let events_after = env.events().all().events().len();
