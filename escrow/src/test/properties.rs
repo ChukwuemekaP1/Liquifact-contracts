@@ -1,5 +1,6 @@
 use super::*;
 use proptest::prelude::*;
+use std::vec::Vec;
 
 proptest! {
     #[test]
