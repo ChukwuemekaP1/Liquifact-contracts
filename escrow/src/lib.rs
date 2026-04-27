@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), no_std)]
 //! LiquiFact Escrow Contract
 //!
 //! Holds investor funds for an invoice until settlement.
@@ -75,7 +76,6 @@
 //! written; see `docs/escrow-pro-rata.md` for the authoritative pro-rata payout math and rounding rules.
 //! Off-chain share for an investor is `get_contribution(addr) / snapshot.total_principal`.
 
-#![cfg_attr(not(test), no_std)]
 #![allow(clippy::too_many_arguments)]
 
 use soroban_sdk::{
