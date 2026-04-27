@@ -30,7 +30,7 @@ fn init_open(
     let treasury = Address::generate(env);
     client.init(
         admin,
-        &String::from_str(env, id),
+        &soroban_sdk::String::from_str(env, id),
         sme,
         &TARGET,
         &800i64,
@@ -62,10 +62,10 @@ fn init_funded(
 /// Initialise, fund, settle, return (escrow_id, token, treasury).
 fn init_settled<'a>(
     env: &'a Env,
-    admin: &'a Address,
-    sme: &'a Address,
-    investor: &'a Address,
-    id: &'a str,
+    admin: &Address,
+    sme: &Address,
+    investor: &Address,
+    id: &str,
 ) -> (LiquifactEscrowClient<'a>, Address, Address, Address) {
     let sac = env.register_stellar_asset_contract_v2(Address::generate(env));
     let token = sac.address();
@@ -74,7 +74,7 @@ fn init_settled<'a>(
     let client = LiquifactEscrowClient::new(env, &escrow_id);
     client.init(
         admin,
-        &String::from_str(env, id),
+        &soroban_sdk::String::from_str(env, id),
         sme,
         &TARGET,
         &800i64,
@@ -349,7 +349,10 @@ fn hold_set_before_funding_still_blocks_settle_after_funded() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.settle();
     }));
-    assert!(result.is_err(), "settle must be blocked while hold is active");
+    assert!(
+        result.is_err(),
+        "settle must be blocked while hold is active"
+    );
 }
 
 /// Clearing the hold and immediately re-setting it must block again.
@@ -371,7 +374,10 @@ fn hold_can_be_toggled_and_re_blocks_operations() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.claim_investor_payout(&investor);
     }));
-    assert!(result.is_err(), "claim must be blocked after re-setting hold");
+    assert!(
+        result.is_err(),
+        "claim must be blocked after re-setting hold"
+    );
 
     // Clear again → claim succeeds.
     client.clear_legal_hold();
@@ -396,7 +402,10 @@ fn hold_persists_after_admin_transfer() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.settle();
     }));
-    assert!(result.is_err(), "settle must remain blocked after admin transfer");
+    assert!(
+        result.is_err(),
+        "settle must remain blocked after admin transfer"
+    );
     // New admin clears the hold.
     client.clear_legal_hold();
     assert!(!client.get_legal_hold());
